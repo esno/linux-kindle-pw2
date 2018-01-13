@@ -214,11 +214,23 @@ __irq_svc:
 	irq_handler
 #ifdef CONFIG_PREEMPT
 	str	r8, [tsk, #TI_PREEMPT]		@ restore preempt count
+
+#if defined(CONFIG_FALCON_DRV) || (defined(CONFIG_FALCON_PSEUDO_NMI) && !defined(CONFIG_FALCON_PSEUDO_NMI_VECTOR_HOOK))
+	add	r0, sp, #4			@ pt_regs pointer
+	bl	falcon_needs_skipping_preempt
+	teq	r0, #0
+	bne	skip_preempt
+#endif
+
 	ldr	r0, [tsk, #TI_FLAGS]		@ get flags
 	teq	r8, #0				@ if preempt count != 0
 	movne	r0, #0				@ force flags to 0
 	tst	r0, #_TIF_NEED_RESCHED
 	blne	svc_preempt
+
+#if defined(CONFIG_FALCON_DRV) || (defined(CONFIG_FALCON_PSEUDO_NMI) && !defined(CONFIG_FALCON_PSEUDO_NMI_VECTOR_HOOK))
+skip_preempt:
+#endif
 #endif
 	ldr	r4, [sp, #S_PSR]		@ irqs are already disabled
 #ifdef CONFIG_TRACE_IRQFLAGS

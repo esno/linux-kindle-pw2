@@ -835,7 +835,12 @@ static int __init fcntl_init(void)
 	 * Exceptions: O_NONBLOCK is a two bit define on parisc; O_NDELAY
 	 * is defined as O_NONBLOCK on some platforms and not on others.
 	 */
-	BUILD_BUG_ON(19 - 1 /* for O_RDONLY being 0 */ != HWEIGHT32(
+#ifdef CONFIG_LAB126
+#define HAS_O_ADVNONEED 1
+#else
+#define HAS_O_ADVNONEED 0
+#endif
+	BUILD_BUG_ON(19 + HAS_O_ADVNONEED - 1 /* for O_RDONLY being 0 */ != HWEIGHT32(
 		O_RDONLY	| O_WRONLY	| O_RDWR	|
 		O_CREAT		| O_EXCL	| O_NOCTTY	|
 		O_TRUNC		| O_APPEND	| /* O_NONBLOCK	| */
@@ -843,6 +848,9 @@ static int __init fcntl_init(void)
 		O_DIRECT	| O_LARGEFILE	| O_DIRECTORY	|
 		O_NOFOLLOW	| O_NOATIME	| O_CLOEXEC	|
 		__FMODE_EXEC	| O_PATH
+#ifdef CONFIG_LAB126
+		| O_ADVNONEED
+#endif
 		));
 
 	fasync_cache = kmem_cache_create("fasync_cache",

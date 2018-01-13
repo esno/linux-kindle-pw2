@@ -78,6 +78,31 @@ extern unsigned int system_serial_low;
 extern unsigned int system_serial_high;
 extern unsigned int mem_fclk_21285;
 
+#if defined(CONFIG_LAB126)
+#define SERIAL16_SIZE	16
+#define REVISION16_SIZE	16
+#define MAC_ADDR_SIZE	12
+#define MAC_SEC_SIZE	20
+#define BOOTMODE_SIZE	16
+
+#ifdef CONFIG_FALCON
+#define QBCOUNT_SIZE    10
+#endif
+
+extern unsigned char system_rev16[REVISION16_SIZE];
+extern unsigned char system_serial16[SERIAL16_SIZE];
+extern unsigned int system_post;
+extern unsigned char system_mac_addr[MAC_ADDR_SIZE];
+extern unsigned char system_btmac_addr[MAC_ADDR_SIZE];
+extern unsigned char system_mac_sec[MAC_SEC_SIZE];
+extern unsigned char system_bootmode[BOOTMODE_SIZE];
+extern unsigned char system_postmode[BOOTMODE_SIZE];
+#ifdef CONFIG_FALCON
+extern unsigned char system_oldboot[BOOTMODE_SIZE];
+extern unsigned char system_qbcount[QBCOUNT_SIZE];
+#endif
+#endif 
+
 struct pt_regs;
 
 void die(const char *msg, struct pt_regs *regs, int err);

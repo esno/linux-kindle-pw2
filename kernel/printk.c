@@ -41,8 +41,16 @@
 #include <linux/cpu.h>
 #include <linux/notifier.h>
 #include <linux/rculist.h>
+#include <linux/proc_fs.h>
 
 #include <asm/uaccess.h>
+
+
+#ifdef CONFIG_FALCON
+
+#define MAX_SBIOS_PRINT 100
+static int (**pp_bios_printk)(const char *fmt, ...);
+#endif
 
 /*
  * Architectures can override it:
@@ -185,6 +193,71 @@ static int __init log_buf_len_setup(char *str)
 }
 early_param("log_buf_len", log_buf_len_setup);
 
+#ifdef CONFIG_LAB126_PRINTK_BUFFER
+static unsigned long __initdata log_goal_location = 0;
+static unsigned long __initdata log_worst_location = 0;
+
+static int __init log_goal_position(char *str) {
+	log_goal_location = memparse(str, &str);
+
+	printk(KERN_INFO "Will try to place printk log at %08lx\n", log_goal_location);
+
+	if (*str==',') {
+		log_worst_location = memparse(str+1, &str);
+	} else {
+		//If a worst case was not provided, don't let it slip more than 1 meg from
+		//goal.
+		log_worst_location = log_goal_location-0x100000;
+	}
+	return 0;
+}
+early_param("log_pos_goal",log_goal_position);
+
+static char *backup_buffer;
+
+static int backup_buffer_read(char *page, char **start, off_t off, int count, int *eof, void *data)
+{
+	int written = 0;	
+	off_t limit = min(off+count, (off_t)log_buf_len);
+	int i;
+
+	*start = page;
+	*eof = 1;
+
+	if (off<log_buf_len && backup_buffer) {
+		written = min(limit-off, (off_t)count);
+		memcpy(page, backup_buffer+off, written);
+
+		//Since shell scripts are going to be dealing with this output, at least
+		//clear out the nulls
+		for (i=0; i<written; i++) {
+			if (unlikely (page[i]=='\0')) {
+				page[i]=' ';
+			}
+		}
+
+
+		*eof = 0;
+	}
+
+	return written;
+}
+
+void setup_printk_proc() {
+	struct proc_dir_entry *backup_proc_entry;
+
+	backup_proc_entry = create_proc_entry("printkbuf", S_IRUGO, NULL);
+
+	if (backup_proc_entry) {
+		backup_proc_entry->read_proc = backup_buffer_read;
+		backup_proc_entry->write_proc = NULL;
+		backup_proc_entry->data = NULL;
+	} else {
+		printk(KERN_ERR "Failed to initialize printk recovery proc entry\n");
+	}
+}
+#endif //CONFIG_LAB126_PRINTK_BUFFER
+
 void __init setup_log_buf(int early)
 {
 	unsigned long flags;
@@ -192,8 +265,13 @@ void __init setup_log_buf(int early)
 	char *new_log_buf;
 	int free;
 
-	if (!new_log_buf_len)
+#ifdef CONFIG_LAB126_PRINTK_BUFFER
+	if (!new_log_buf_len && !log_goal_location)
 		return;
+#else
+	if (!new_log_buf_len) 
+		return;
+#endif
 
 	if (early) {
 		unsigned long mem;
@@ -203,7 +281,47 @@ void __init setup_log_buf(int early)
 			return;
 		new_log_buf = __va(mem);
 	} else {
+
+#ifdef CONFIG_LAB126_PRINTK_BUFFER
+		if (log_goal_location) {
+			int ret = -EBUSY;
+
+			if (!new_log_buf_len) {
+				new_log_buf_len = log_buf_len;
+			}
+
+			while (ret < 0 && log_goal_location >= log_worst_location) {
+				ret = reserve_bootmem(log_goal_location, new_log_buf_len, BOOTMEM_EXCLUSIVE);
+				if (ret<0) {
+					log_goal_location-=PAGE_SIZE;
+				}
+			}
+
+			if (ret < 0) {
+				printk(KERN_ERR "Unable to change over to statically positioned printk buffer!");
+				return;
+			} else {
+				new_log_buf = __va(log_goal_location);
+				printk("Prink buffer will be relocated to physical address: %08lx\n", log_goal_location);
+
+				backup_buffer = alloc_bootmem_nopanic(new_log_buf_len);
+
+				if (backup_buffer) {
+					memcpy(backup_buffer, new_log_buf, new_log_buf_len);
+
+					//Now that it is saved, clear out last time's prink to prevent log framents from
+					//recusrively showing up in printk logs.
+					memset(new_log_buf, '\0', new_log_buf_len);
+				}
+			}
+			
+		} else {
+			new_log_buf = alloc_bootmem_nopanic(new_log_buf_len);
+		}
+#else
+
 		new_log_buf = alloc_bootmem_nopanic(new_log_buf_len);
+#endif
 	}
 
 	if (unlikely(!new_log_buf)) {
@@ -755,6 +873,26 @@ asmlinkage int printk(const char *fmt, ...)
 	return r;
 }
 
+#ifdef CONFIG_FALCON
+int sbios_printk(const char *fmt, ...)
+{ 
+	char *pre_fix = "[sbios]";
+	int r = 0;
+	char new[MAX_SBIOS_PRINT];
+	va_list args;
+	
+	memset(new, 0, sizeof(char) * MAX_SBIOS_PRINT);
+	strcpy(new, pre_fix);
+	strcpy(new + strlen(new), fmt);
+	
+	va_start(args, fmt);
+	r = vprintk(new, args);
+	va_end(args);
+	
+	return r;
+
+}
+#endif		
 /* cpu currently holding logbuf_lock */
 static volatile unsigned int printk_cpu = UINT_MAX;
 
@@ -1117,6 +1255,9 @@ void suspend_console(void)
 	if (!console_suspend_enabled)
 		return;
 	printk("Suspending console(s) (use no_console_suspend to debug)\n");
+#ifdef CONFIG_FALCON
+	*pp_bios_printk = NULL;
+#endif
 	console_lock();
 	console_suspended = 1;
 	up(&console_sem);
@@ -1129,6 +1270,9 @@ void resume_console(void)
 	down(&console_sem);
 	console_suspended = 0;
 	console_unlock();
+#ifdef CONFIG_FALCON
+	*pp_bios_printk = sbios_printk;
+#endif
 }
 
 /**
@@ -1584,7 +1728,7 @@ EXPORT_SYMBOL(unregister_console);
 static int __init printk_late_init(void)
 {
 	struct console *con;
-
+	
 	for_each_console(con) {
 		if (!keep_bootcon && con->flags & CON_BOOT) {
 			printk(KERN_INFO "turn off boot console %s%d\n",
@@ -1593,6 +1737,10 @@ static int __init printk_late_init(void)
 		}
 	}
 	hotcpu_notifier(console_cpu_notify, 0);
+#ifdef CONFIG_FALCON
+	pp_bios_printk = (CONFIG_FALCON_STORAGE_BIOS_ADDR + CONFIG_FALCON_STORAGE_BIOS_SIZE - 3 * sizeof(u32));
+	*pp_bios_printk = sbios_printk;
+#endif
 	return 0;
 }
 late_initcall(printk_late_init);

@@ -1579,6 +1579,102 @@ int fat_flush_inodes(struct super_block *sb, struct inode *i1, struct inode *i2)
 }
 EXPORT_SYMBOL_GPL(fat_flush_inodes);
 
+#ifdef CONFIG_LAB126
+
+static struct kset *fat_kset = NULL;
+static struct kobject fat_kobj;
+
+int fat_error_notify(void)
+{
+        int err;
+
+        err = kobject_uevent(&fat_kobj, KOBJ_ADD);
+        if (err) {
+                printk(KERN_ERR "%s: failed to send uevent (%d)\n", __func__, err);
+                return err;
+        }
+
+        return 0;
+}
+
+#ifdef DEVELOPMENT_MODE
+static struct attribute ro_debug_attr = {
+        .name = "ro_debug",
+        .mode = 0644,
+};
+#endif
+
+static struct attribute status_attr = {
+        .name = "status",
+        .mode = 0644,
+};
+
+static struct attribute *fat_attrs[] = {
+        &status_attr,
+#ifdef DEVELOPMENT_MODE
+        &ro_debug_attr,
+#endif
+        NULL,
+};
+
+static ssize_t fat_attr_store(struct kobject *kobj,
+                               struct attribute *attr,
+                               const char *buf, size_t len)
+{
+#ifdef DEVELOPMENT_MODE
+        fat_error_notify();
+#endif
+        return len;
+}
+
+static struct sysfs_ops fat_attr_ops = {
+        .store  = fat_attr_store,
+};
+
+static struct kobj_type fat_ktype = {
+        .default_attrs  = fat_attrs,
+        .sysfs_ops      = &fat_attr_ops,
+};
+
+static int fat_uevent(struct kset *kset, struct kobject *kobj,
+                      struct kobj_uevent_env *env)
+{
+        return 0;
+}
+
+static struct kset_uevent_ops fat_uevent_ops = {
+        .uevent = fat_uevent,
+};
+
+static int fat_register_kobj(void)
+{
+        int err;
+
+        fat_kset = kset_create_and_add("vfat", &fat_uevent_ops, kernel_kobj);
+        if (!fat_kset) {
+                printk(KERN_ERR "%s: could not create FAT kset, notifications will be disabled\n", __func__);
+                return -ENOMEM;
+        }
+
+        fat_kobj.kset = fat_kset;
+        err = kobject_init_and_add(&fat_kobj, &fat_ktype, NULL, "vfat0");
+        if (err) {
+                printk(KERN_ERR "%s: could not create FAT kobject, notifications will be disabled\n", __func__);
+                kset_unregister(fat_kset);
+                return -ENOMEM;
+        }
+
+        return 0;
+}
+
+static void fat_delete_kobj(void)
+{
+        kobject_put(&fat_kobj);
+        kset_unregister(fat_kset);
+}
+
+#endif
+
 static int __init init_fat_fs(void)
 {
 	int err;
@@ -1591,6 +1687,10 @@ static int __init init_fat_fs(void)
 	if (err)
 		goto failed;
 
+#ifdef CONFIG_LAB126
+        fat_register_kobj();
+#endif
+
 	return 0;
 
 failed:
@@ -1602,6 +1702,10 @@ static void __exit exit_fat_fs(void)
 {
 	fat_cache_destroy();
 	fat_destroy_inodecache();
+
+#ifdef CONFIG_LAB126
+        fat_delete_kobj();
+#endif
 }
 
 module_init(init_fat_fs)

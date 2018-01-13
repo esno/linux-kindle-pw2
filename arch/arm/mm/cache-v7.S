@@ -181,8 +181,12 @@ ENTRY(v7_coherent_user_range)
 	sub	r3, r2, #1
 	bic	r12, r0, r3
 #ifdef CONFIG_ARM_ERRATA_764369
-	ALT_SMP(W(dsb))
-	ALT_UP(W(nop))
+#ifdef CONFIG_LAB126
+	W(dsb)
+#else
+	OPT_SMP(W(dsb))
+	OPT_UP(W(nop))
+#endif
 #endif
 1:
  USER(	mcr	p15, 0, r12, c7, c11, 1	)	@ clean D line to the point of unification
@@ -234,8 +238,12 @@ ENTRY(v7_flush_kern_dcache_area)
 	sub	r3, r2, #1
 	bic	r0, r0, r3
 #ifdef CONFIG_ARM_ERRATA_764369
-	ALT_SMP(W(dsb))
-	ALT_UP(W(nop))
+#ifdef CONFIG_LAB126
+	W(dsb)
+#else
+	OPT_SMP(W(dsb))
+	OPT_UP(W(nop))
+#endif
 #endif
 1:
 	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D line / unified line
@@ -262,8 +270,12 @@ v7_dma_inv_range:
 	tst	r0, r3
 	bic	r0, r0, r3
 #ifdef CONFIG_ARM_ERRATA_764369
-	ALT_SMP(W(dsb))
-	ALT_UP(W(nop))
+#ifdef CONFIG_LAB126
+	W(dsb)
+#else
+	OPT_SMP(W(dsb))
+	OPT_UP(W(nop))
+#endif
 #endif
 	mcrne	p15, 0, r0, c7, c14, 1		@ clean & invalidate D / U line
 
@@ -289,8 +301,12 @@ v7_dma_clean_range:
 	sub	r3, r2, #1
 	bic	r0, r0, r3
 #ifdef CONFIG_ARM_ERRATA_764369
-	ALT_SMP(W(dsb))
-	ALT_UP(W(nop))
+#ifdef CONFIG_LAB126
+	W(dsb)
+#else
+	OPT_SMP(W(dsb))
+	OPT_UP(W(nop))
+#endif
 #endif
 1:
 	mcr	p15, 0, r0, c7, c10, 1		@ clean D / U line
@@ -311,8 +327,12 @@ ENTRY(v7_dma_flush_range)
 	sub	r3, r2, #1
 	bic	r0, r0, r3
 #ifdef CONFIG_ARM_ERRATA_764369
-	ALT_SMP(W(dsb))
-	ALT_UP(W(nop))
+#ifdef CONFIG_LAB126
+	W(dsb)
+#else
+	OPT_SMP(W(dsb))
+	OPT_UP(W(nop))
+#endif
 #endif
 1:
 	mcr	p15, 0, r0, c7, c14, 1		@ clean & invalidate D / U line

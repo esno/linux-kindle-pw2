@@ -366,6 +366,13 @@ do_page_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 			SEGV_ACCERR : SEGV_MAPERR;
 	}
 
+	#ifdef CONFIG_LAB126
+	if (strncmp("cvm", tsk->comm, 3)!=0 &&
+		strncmp("CVM", tsk->comm, 3)!=0) {
+		printk("%s (%d) segfault pc: %08lx addr:%08lx\n", tsk->comm, (u32)tsk->pid, instruction_pointer(regs), addr);
+	}
+	#endif
+
 	__do_user_fault(tsk, addr, fsr, sig, code, regs);
 	return 0;
 

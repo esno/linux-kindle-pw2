@@ -18,6 +18,7 @@
 #include <linux/types.h>
 #include <linux/io.h>
 
+#include <linux/mmc/card.h>
 #include <linux/mmc/sdhci.h>
 
 /*
@@ -109,11 +110,13 @@
 #define  SDHCI_CLOCK_INT_EN	0x0001
 
 #define SDHCI_TIMEOUT_CONTROL	0x2E
+#define SDHCI_IPP_RST_N         0x80
 
 #define SDHCI_SOFTWARE_RESET	0x2F
 #define  SDHCI_RESET_ALL	0x01
 #define  SDHCI_RESET_CMD	0x02
 #define  SDHCI_RESET_DATA	0x04
+#define  SDHCI_INIT_ACTIVE      0x08
 
 #define SDHCI_INT_STATUS	0x30
 #define SDHCI_INT_ENABLE	0x34
@@ -274,7 +277,23 @@ struct sdhci_ops {
 	void	(*platform_reset_exit)(struct sdhci_host *host, u8 mask);
 	int	(*set_uhs_signaling)(struct sdhci_host *host, unsigned int uhs);
 
+	void		(*platform_clk_ctrl)(struct sdhci_host *host, bool enable);
+	int		(*platform_execute_tuning)(struct sdhci_host *host);
+	void	(*platform_dumpregs)(struct sdhci_host *host);
+#ifdef CONFIG_LAB126
+        void    (*platform_reset_card)(struct sdhci_host *host);
+        int     (*platform_send_74_clocks)(struct sdhci_host *host);
+#endif /* CONFIG_LAB126 */
 };
+
+#ifdef CONFIG_LAB126
+#if defined(CONFIG_MX6SL_WARIO_BASE)
+extern void gpio_wifi_power_enable(int enable);
+#endif
+#if defined(CONFIG_MX6SL_WARIO_WOODY)
+extern void brcm_gpio_wifi_power_enable(int enable);
+#endif
+#endif
 
 #ifdef CONFIG_MMC_SDHCI_IO_ACCESSORS
 
@@ -369,6 +388,16 @@ static inline void *sdhci_priv(struct sdhci_host *host)
 	return (void *)host->private;
 }
 
+static inline bool sdhci_is_sdio_attached(struct sdhci_host *host)
+{
+	struct mmc_card *card = host->mmc->card;
+
+	if (card && card->sdio_func[0])
+		return true;
+
+	return false;
+}
+
 extern void sdhci_card_detect(struct sdhci_host *host);
 extern int sdhci_add_host(struct sdhci_host *host);
 extern void sdhci_remove_host(struct sdhci_host *host, int dead);
@@ -378,5 +407,7 @@ extern int sdhci_suspend_host(struct sdhci_host *host, pm_message_t state);
 extern int sdhci_resume_host(struct sdhci_host *host);
 extern void sdhci_enable_irq_wakeups(struct sdhci_host *host);
 #endif
+
+void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq);
 
 #endif /* __SDHCI_HW_H */

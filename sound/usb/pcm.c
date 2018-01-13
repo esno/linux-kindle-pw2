@@ -23,6 +23,8 @@
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
+#include <linux/delay.h>
+#include <linux/sched.h>
 
 #include "usbaudio.h"
 #include "card.h"
@@ -34,6 +36,8 @@
 #include "clock.h"
 #include "power.h"
 
+
+static struct delayed_work recovery_work;
 /*
  * return the current pcm pointer.  just based on the hwptr_done value.
  */
@@ -182,6 +186,7 @@ int snd_usb_init_pitch(struct snd_usb_audio *chip, int iface,
 	}
 }
 
+extern void otg_esd_recovery_kick(int ms);
 /*
  * find a matching format and set up the interface
  */
@@ -220,8 +225,10 @@ static int set_format(struct snd_usb_substream *subs, struct audioformat *fmt)
 	/* set interface */
 	if (subs->interface != fmt->iface || subs->altset_idx != fmt->altset_idx) {
 		if (usb_set_interface(dev, fmt->iface, fmt->altsetting) < 0) {
-			snd_printk(KERN_ERR "%d:%d:%d: usb_set_interface failed\n",
+			snd_printk(KERN_ERR "%d:%d:%d: usb_set_interface failed.. calling recovery\n",
 				   dev->devnum, fmt->iface, fmt->altsetting);
+
+			otg_esd_recovery_kick(100);
 			return -EIO;
 		}
 		snd_printdd(KERN_INFO "setting usb interface %d:%d\n", fmt->iface, fmt->altsetting);
@@ -809,6 +816,7 @@ static int snd_usb_pcm_open(struct snd_pcm_substream *substream, int direction)
 	runtime->hw = snd_usb_hardware;
 	runtime->private_data = subs;
 	subs->pcm_substream = substream;
+	
 	/* runtime PM is also done there */
 	return setup_hw_info(runtime, subs);
 }
@@ -818,6 +826,8 @@ static int snd_usb_pcm_close(struct snd_pcm_substream *substream, int direction)
 	struct snd_usb_stream *as = snd_pcm_substream_chip(substream);
 	struct snd_usb_substream *subs = &as->substream[direction];
 
+	flush_delayed_work(&recovery_work);
+	
 	if (!as->chip->shutdown && subs->interface >= 0) {
 		usb_set_interface(subs->dev, subs->interface, 0);
 		subs->interface = -1;

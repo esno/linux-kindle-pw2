@@ -83,7 +83,12 @@ int sysctl_tcp_ecn __read_mostly = 2;
 EXPORT_SYMBOL(sysctl_tcp_ecn);
 int sysctl_tcp_dsack __read_mostly = 1;
 int sysctl_tcp_app_win __read_mostly = 31;
+#if defined(CONFIG_LAB126)
+// Keeping the same default as 2.6 kernel for performance considerations. Check : JFOUR-9944.
+int sysctl_tcp_adv_win_scale __read_mostly = 2;
+#else
 int sysctl_tcp_adv_win_scale __read_mostly = 1;
+#endif
 EXPORT_SYMBOL(sysctl_tcp_adv_win_scale);
 
 int sysctl_tcp_stdurg __read_mostly;

@@ -33,10 +33,16 @@
 #include <linux/security.h>
 #include <linux/ptrace.h>
 
+#ifdef CONFIG_LAB126
+#include <llog.h>
+#endif
+
 int sysctl_panic_on_oom;
 int sysctl_oom_kill_allocating_task;
 int sysctl_oom_dump_tasks = 1;
 static DEFINE_SPINLOCK(zone_scan_lock);
+
+extern void dump_sched_memlog(void);
 
 /**
  * test_set_oom_score_adj() - set current's oom_score_adj and return old value
@@ -433,6 +439,9 @@ static int oom_kill_task(struct task_struct *p, struct mem_cgroup *mem)
 		task_pid_nr(p), p->comm, K(p->mm->total_vm),
 		K(get_mm_counter(p->mm, MM_ANONPAGES)),
 		K(get_mm_counter(p->mm, MM_FILEPAGES)));
+#ifdef CONFIG_LAB126
+	LLOG_DEVICE_METRIC(DEVICE_METRIC_LOW_PRIORITY, DEVICE_METRIC_TYPE_COUNTER, "oomkiller", "oomkill", "oomkill", 1, p->comm);
+#endif
 	task_unlock(p);
 
 	/*

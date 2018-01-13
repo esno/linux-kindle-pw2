@@ -25,6 +25,9 @@
 #include <asm/tlbflush.h>
 #include <asm/sizes.h>
 
+/* Keep track of pages reserved for DMA operations */
+unsigned int dma_reserved_count = 0;
+
 static u64 get_coherent_dma_mask(struct device *dev)
 {
 	u64 mask = ISA_DMA_THRESHOLD;
@@ -109,6 +112,8 @@ static void __dma_free_buffer(struct page *page, size_t size)
 	struct page *e = page + (size >> PAGE_SHIFT);
 
 	while (page < e) {
+
+		dma_reserved_count--;
 		__free_page(page);
 		page++;
 	}
@@ -228,6 +233,8 @@ __dma_alloc_remap(struct page *page, size_t size, gfp_t gfp, pgprot_t prot)
 
 		do {
 			BUG_ON(!pte_none(*pte));
+
+			dma_reserved_count++;
 
 			set_pte_ext(pte, mk_pte(page, prot), 0);
 			page++;
@@ -356,6 +363,31 @@ dma_alloc_writecombine(struct device *dev, size_t size, dma_addr_t *handle, gfp_
 			   pgprot_writecombine(pgprot_kernel));
 }
 EXPORT_SYMBOL(dma_alloc_writecombine);
+
+/*
+ *  Allocate DMA-writethrough memory space and return both the kernel remapped
+ * virtual and bus address for that space.
+ */
+void *
+dma_alloc_writethrough(struct device *dev, size_t size, dma_addr_t *handle, gfp_t gfp)
+{
+	return __dma_alloc(dev, size, handle, gfp,
+			  pgprot_writethrough(pgprot_kernel));
+}
+EXPORT_SYMBOL(dma_alloc_writethrough);
+
+/*
+ *  Allocate noncacheable memory space and return both the kernel remapped
+ * virtual and bus address for that space.
+ */
+void *
+dma_alloc_noncacheable(struct device *dev, size_t size, dma_addr_t *handle, gfp_t gfp)
+{
+	return __dma_alloc(dev, size, handle, gfp,
+			  /*pgprot_writethrough(pgprot_kernel));*/
+			  pgprot_noncached(pgprot_kernel));
+}
+EXPORT_SYMBOL(dma_alloc_noncacheable);
 
 static int dma_mmap(struct device *dev, struct vm_area_struct *vma,
 		    void *cpu_addr, dma_addr_t dma_addr, size_t size)

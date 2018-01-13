@@ -99,6 +99,9 @@ asmlinkage __attribute__ ((format (printf, 1, 0)))
 int vprintk(const char *fmt, va_list args);
 asmlinkage __attribute__ ((format (printf, 1, 2))) __cold
 int printk(const char *fmt, ...);
+#ifdef CONFIG_LAB126_PRINTK_BUFFER
+void setup_printk_proc(void);
+#endif
 
 /*
  * Please don't use printk_ratelimit(), because it shares ratelimiting state

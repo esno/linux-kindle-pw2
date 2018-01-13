@@ -27,9 +27,19 @@ static struct otg_transceiver *xceiv;
  */
 struct otg_transceiver *otg_get_transceiver(void)
 {
-	if (xceiv)
-		get_device(xceiv->dev);
-	return xceiv;
+	struct otg_transceiver *ret = xceiv;
+	if (xceiv) {
+		struct device *dev = xceiv->dev;
+		get_device(dev);
+		if (dev && dev->driver && dev->driver->owner) {
+			if (!try_module_get(dev->driver->owner)) {
+				put_device(dev);
+				ret = NULL;
+			}
+		}
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL(otg_get_transceiver);
 
@@ -43,8 +53,13 @@ EXPORT_SYMBOL(otg_get_transceiver);
  */
 void otg_put_transceiver(struct otg_transceiver *x)
 {
-	if (x)
+	if (x) {
+		struct device *dev = x->dev;
+		if (dev && dev->driver && dev->driver->owner) {
+			module_put(dev->driver->owner);
+		}
 		put_device(x->dev);
+	}
 }
 EXPORT_SYMBOL(otg_put_transceiver);
 
@@ -58,9 +73,14 @@ EXPORT_SYMBOL(otg_put_transceiver);
  */
 int otg_set_transceiver(struct otg_transceiver *x)
 {
-	if (xceiv && x)
+
+	if (xceiv && x) {
+		printk(KERN_ERR "Cannot remove current OTG Transceiver as it is still in use.\n");
 		return -EBUSY;
+	} 
+
 	xceiv = x;
+
 	return 0;
 }
 EXPORT_SYMBOL(otg_set_transceiver);

@@ -610,6 +610,9 @@ asmlinkage void __init start_kernel(void)
 #ifdef CONFIG_PROC_FS
 	proc_root_init();
 #endif
+#ifdef CONFIG_LAB126_PRINTK_BUFFER
+	setup_printk_proc();
+#endif
 	cgroup_init();
 	cpuset_init();
 	taskstats_init_early();

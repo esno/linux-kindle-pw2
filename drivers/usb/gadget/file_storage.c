@@ -228,7 +228,6 @@
  * of the Gadget, USB Mass Storage, and SCSI protocols.
  */
 
-
 /* #define VERBOSE_DEBUG */
 /* #define DUMP_MSGS */
 
@@ -254,6 +253,17 @@
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 
+#if defined(CONFIG_LAB126)
+#include <mach/boardid.h>
+#include <mach/boot_globals.h>
+
+#define DRIVER_MFG_STR		"Amazon"
+#define DRIVER_VENDOR_ID_STR	"Kindle"
+#define DRIVER_PROD_ID_STR	"Internal Storage"
+#define DRIVER_PRODUCT_STR	"Amazon Kindle";
+
+#endif
+
 #include "gadget_chips.h"
 
 
@@ -275,8 +285,13 @@
 #define DRIVER_NAME		"g_file_storage"
 #define DRIVER_VERSION		"1 September 2010"
 
+#if defined(CONFIG_LAB126)
+static const char fsg_string_manufacturer[] = DRIVER_MFG_STR;
+static const char fsg_string_product[] = DRIVER_PRODUCT_STR;
+#else
 static       char fsg_string_manufacturer[64];
 static const char fsg_string_product[] = DRIVER_DESC;
+#endif
 static const char fsg_string_config[] = "Self-powered";
 static const char fsg_string_interface[] = "Mass Storage";
 
@@ -325,6 +340,10 @@ static struct {
 	char		*transport_name;
 	int		protocol_type;
 	char		*protocol_name;
+
+#if defined(CONFIG_LAB126)
+	int recovery_mode;
+#endif
 
 } mod_data = {					// Default values
 	.transport_parm		= "BBB",
@@ -390,6 +409,12 @@ MODULE_PARM_DESC(buflen, "I/O buffer size");
 
 #endif /* CONFIG_USB_FILE_STORAGE_TEST */
 
+#if defined(CONFIG_LAB126)
+#ifdef MODULE
+module_param_named(recovery_mode, mod_data.recovery_mode, int, S_IRUGO);
+MODULE_PARM_DESC(recovery_mode, "recovery util mode");
+#endif
+#endif
 
 /*
  * These definitions will permit the compiler to avoid generating code for
@@ -454,6 +479,11 @@ struct fsg_dev {
 #define REGISTERED		0
 #define IGNORE_BULK_OUT		1
 #define SUSPENDED		2
+#if defined(CONFIG_LAB126)
+#define ONLINE			3
+#define RESUME_PENDING  4
+#define SUSPEND_PENDING 5
+#endif
 
 	struct usb_ep		*bulk_in;
 	struct usb_ep		*bulk_out;
@@ -488,7 +518,23 @@ struct fsg_dev {
 	unsigned int		nluns;
 	struct fsg_lun		*luns;
 	struct fsg_lun		*curlun;
+
+#ifdef CONFIG_FSL_UTP
+	void			*utp;
+#endif
+
+#if defined(CONFIG_LAB126)
+#define SC_KEEPALIVE_DELAY	2000 /* 2 secs */
+	int			ms_keepalive;
+	struct delayed_work	synchronize_cache_work;
+
+    	struct work_struct	susp_work;
+#endif
 };
+
+#ifdef CONFIG_FSL_UTP
+#include "fsl_updater.h"
+#endif
 
 typedef void (*fsg_routine_t)(struct fsg_dev *);
 
@@ -557,7 +603,11 @@ device_desc = {
 
 	.iManufacturer =	FSG_STRING_MANUFACTURER,
 	.iProduct =		FSG_STRING_PRODUCT,
+#ifdef CONFIG_FSL_UTP
+	.iSerialNumber = 0,
+#else
 	.iSerialNumber =	FSG_STRING_SERIAL,
+#endif
 	.bNumConfigurations =	1,
 };
 
@@ -586,7 +636,55 @@ dev_qualifier = {
 	.bNumConfigurations =	1,
 };
 
+static inline int send_offline_uevent(struct fsg_dev *fsg, int unplug_unsafe) {
 
+	printk(KERN_INFO"\n%s:%d fsg_ 0x%lx unsafe %d recovery_mode:%d\n", __FUNCTION__,__LINE__,fsg->atomic_bitflags, unplug_unsafe, mod_data.recovery_mode);
+	
+	if (!mod_data.recovery_mode) {
+
+		char event_string[32];
+		char *envp[] = {event_string, NULL};
+		if (unplug_unsafe)
+			snprintf(event_string, 31, "UNPLUG=unsafe");
+        else
+			snprintf(event_string, 31, "UNPLUG=safe");
+
+		if (test_and_clear_bit(ONLINE, &fsg->atomic_bitflags) &&
+			kobject_uevent_env(&fsg->gadget->dev.parent->kobj, KOBJ_OFFLINE, envp)) {
+			printk(KERN_ERR __FILE__ ", line %d: kobject_uevent failed\n", __LINE__);
+			return -1;
+		}
+	} else {
+		clear_bit(ONLINE, &fsg->atomic_bitflags);
+	}
+
+	return 0;
+}
+
+extern bool max77696_uic_is_usbhost (void);
+extern void dump_stack(void);
+
+static inline int send_online_uevent(struct fsg_dev *fsg) {
+
+	printk(KERN_INFO"\n%s:%d fsg_ 0x%lx recovery_mode:%d", __FUNCTION__,__LINE__,fsg->atomic_bitflags, mod_data.recovery_mode);
+
+	if(!max77696_uic_is_usbhost()) {
+		printk(KERN_ERR "trying to send online event when usb host is not connected");
+		dump_stack();
+		return 0;
+	}
+	if (!mod_data.recovery_mode) {
+		if (!test_and_set_bit(ONLINE, &fsg->atomic_bitflags) &&
+			kobject_uevent(&fsg->gadget->dev.parent->kobj, KOBJ_ONLINE)) {
+			printk(KERN_ERR __FILE__ ", line %d: kobject_uevent failed\n", __LINE__);
+			return -1;
+		}
+	} else {
+		set_bit(ONLINE, &fsg->atomic_bitflags);
+	}
+
+	return 0;
+}
 
 /*
  * Config descriptors must agree with the code that sets configurations
@@ -663,7 +761,7 @@ static void fsg_disconnect(struct usb_gadget *gadget)
 {
 	struct fsg_dev		*fsg = get_gadget_data(gadget);
 
-	DBG(fsg, "disconnect or port reset\n");
+	printk(KERN_INFO"%s:%d\n",__FUNCTION__,__LINE__);
 	raise_exception(fsg, FSG_STATE_DISCONNECT);
 }
 
@@ -1436,6 +1534,46 @@ static int do_write(struct fsg_dev *fsg)
 
 
 /*-------------------------------------------------------------------------*/
+#if defined(CONFIG_LAB126)	
+static void do_synchronize_cache_work(struct work_struct *work)
+{
+	struct fsg_dev *fsg = 
+		container_of(work, struct fsg_dev, synchronize_cache_work.work);
+	struct fsg_lun	*curlun = fsg->curlun;
+
+	/* If the host is still pinging us, don't unload */
+	/* Windows XP sometimes sends a spurious TEST_UNIT_READY between
+	 * SYNCHRONIZE_CACHE and suspend when disconnecting from the task bar, so
+	 * we will still disconnect if we get one more SCSI command from the host,
+	 * but only if it's TEST_UNIT_READY. */
+	if (fsg->ms_keepalive == 1 && (fsg->cmnd[0] == TEST_UNIT_READY)) {
+		INFO(fsg, "One spurious TEST_UNIT_READY after SYNCHRONIZE_CACHE,"
+		    " disconnecting anyways.\n");
+	} else if (fsg->ms_keepalive) {
+		DBG(fsg, "Device still alive: not disconnecting. "
+		    "(got %d commands after SYNCHRONIZE_CACHE)\n", fsg->ms_keepalive);
+		return;
+	} else {
+		INFO(fsg, "No SCSI commands from host within %d ms of"
+		    " SYNCHRONIZE_CACHE, disconnecting.\n", SC_KEEPALIVE_DELAY);
+	}
+
+	DBG(fsg, "Device stopping after SYNCHRONIZE_CACHE..\n");
+
+	/* Shut down the backing file */
+	down_write(&fsg->filesem);
+	DBG(fsg, "%s:%d", __FUNCTION__,__LINE__);
+	fsg_lun_close(curlun);
+	up_write(&fsg->filesem);
+			
+	/* Send event to userspace */
+	send_offline_uevent(fsg, 0);
+	
+	set_drivemode_online(0);
+
+	DBG(fsg, "..complete\n");
+}
+#endif
 
 static int do_synchronize_cache(struct fsg_dev *fsg)
 {
@@ -1447,6 +1585,17 @@ static int do_synchronize_cache(struct fsg_dev *fsg)
 	rc = fsg_lun_fsync_sub(curlun);
 	if (rc)
 		curlun->sense_data = SS_WRITE_ERROR;
+
+#if defined(CONFIG_LAB126)	
+	cancel_delayed_work(&fsg->synchronize_cache_work);
+
+	/* Check to see if Windows is still there */
+	if (fsg->ms_keepalive) {
+	    fsg->ms_keepalive = 0;
+	    schedule_delayed_work(&fsg->synchronize_cache_work, msecs_to_jiffies(SC_KEEPALIVE_DELAY));
+	}
+#endif
+
 	return 0;
 }
 
@@ -1565,8 +1714,13 @@ static int do_inquiry(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 {
 	u8	*buf = (u8 *) bh->buf;
 
+#if defined(CONFIG_LAB126)
+	static char vendor_id[] = DRIVER_VENDOR_ID_STR;
+	static char product_disk_id[] = DRIVER_PROD_ID_STR;	
+#else
 	static char vendor_id[] = "Linux   ";
 	static char product_disk_id[] = "File-Stor Gadget";
+#endif
 	static char product_cdrom_id[] = "File-CD Gadget  ";
 
 	if (!fsg->curlun) {		// Unsupported LUNs are okay
@@ -1622,6 +1776,13 @@ static int do_request_sense(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	}
 #endif
 
+#ifdef CONFIG_FSL_UTP
+	if (utp_get_sense(fsg) == 0) {	/* got the sense from the UTP */
+		sd = UTP_CTX(fsg)->sd;
+		sdinfo = UTP_CTX(fsg)->sdinfo;
+		valid = 0;
+	} else
+#endif
 	if (!curlun) {		// Unsupported LUNs are okay
 		fsg->bad_lun_okay = 1;
 		sd = SS_LOGICAL_UNIT_NOT_SUPPORTED;
@@ -1643,6 +1804,9 @@ static int do_request_sense(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	buf[7] = 18 - 8;			// Additional sense length
 	buf[12] = ASC(sd);
 	buf[13] = ASCQ(sd);
+#ifdef CONFIG_FSL_UTP
+	put_unaligned_be32(UTP_CTX(fsg)->sdinfo_h, &buf[8]);
+#endif
 	return 18;
 }
 
@@ -1804,6 +1968,7 @@ static int do_start_stop(struct fsg_dev *fsg)
 	struct fsg_lun	*curlun = fsg->curlun;
 	int		loej, start;
 
+	DBG(fsg, "%s:%d", __FUNCTION__,__LINE__);
 	if (!mod_data.removable) {
 		curlun->sense_data = SS_INVALID_COMMAND;
 		return -EINVAL;
@@ -1829,14 +1994,28 @@ static int do_start_stop(struct fsg_dev *fsg)
 			return -EINVAL;
 		}
 		if (loej) {		// Simulate an unload/eject
+
+#if defined(CONFIG_LAB126)
+			cancel_delayed_work(&fsg->synchronize_cache_work);
+#endif
+
 			up_read(&fsg->filesem);
+			DBG(fsg, "%s:%d", __FUNCTION__,__LINE__);
 			down_write(&fsg->filesem);
 			fsg_lun_close(curlun);
 			up_write(&fsg->filesem);
 			down_read(&fsg->filesem);
+			
+#if defined(CONFIG_LAB126)
+			send_offline_uevent(fsg, 0);
+#endif
 		}
 	} else {
 
+#if defined(CONFIG_LAB126)
+		cancel_delayed_work_sync(&fsg->synchronize_cache_work);
+		send_online_uevent(fsg);
+#endif
 		/* Our emulation doesn't support mounting; the medium is
 		 * available for use as soon as it is loaded. */
 		if (!fsg_lun_is_open(curlun)) {
@@ -1844,6 +2023,9 @@ static int do_start_stop(struct fsg_dev *fsg)
 			return -EINVAL;
 		}
 	}
+#if defined(CONFIG_LAB126)
+	set_drivemode_online(test_bit(ONLINE, &fsg->atomic_bitflags));
+#endif
 #endif
 	return 0;
 }
@@ -2134,7 +2316,11 @@ static int send_status(struct fsg_dev *fsg)
 		sd = SS_INVALID_COMMAND;
 	} else if (sd != SS_NO_SENSE) {
 		DBG(fsg, "sending command-failure status\n");
+#ifdef CONFIG_FSL_UTP
+		status = USB_STATUS_PASS;
+#else
 		status = USB_STATUS_FAIL;
+#endif
 		VDBG(fsg, "  sense data: SK x%02x, ASC x%02x, ASCQ x%02x;"
 				"  info x%x\n",
 				SK(sd), ASC(sd), ASCQ(sd), sdinfo);
@@ -2355,6 +2541,17 @@ static int do_scsi_command(struct fsg_dev *fsg)
 	}
 	fsg->phase_error = 0;
 	fsg->short_packet_received = 0;
+#if defined(CONFIG_LAB126)
+	fsg->ms_keepalive += 1;
+#endif
+
+
+#ifdef CONFIG_FSL_UTP
+	reply = utp_handle_message(fsg, fsg->cmnd, reply);
+
+	if (reply != -EINVAL)
+		return reply;
+#endif
 
 	down_read(&fsg->filesem);	// We're using the backing file
 	switch (fsg->cmnd[0]) {
@@ -2843,6 +3040,7 @@ static int do_set_config(struct fsg_dev *fsg, u8 new_config)
 {
 	int	rc = 0;
 
+	DBG(fsg, "%s:%d", __FUNCTION__,__LINE__);
 	/* Disable the single interface */
 	if (fsg->config != 0) {
 		DBG(fsg, "reset config\n");
@@ -2865,6 +3063,11 @@ static int do_set_config(struct fsg_dev *fsg, u8 new_config)
 			default: 		speed = "?";	break;
 			}
 			INFO(fsg, "%s speed config #%d\n", speed, fsg->config);
+
+#if defined(CONFIG_LAB126)
+			send_online_uevent(fsg);
+			set_drivemode_online(test_bit(ONLINE, &fsg->atomic_bitflags));
+#endif
 		}
 	}
 	return rc;
@@ -2872,7 +3075,6 @@ static int do_set_config(struct fsg_dev *fsg, u8 new_config)
 
 
 /*-------------------------------------------------------------------------*/
-
 static void handle_exception(struct fsg_dev *fsg)
 {
 	siginfo_t		info;
@@ -3016,9 +3218,16 @@ static void handle_exception(struct fsg_dev *fsg)
 		break;
 
 	case FSG_STATE_DISCONNECT:
-		for (i = 0; i < fsg->nluns; ++i)
-			fsg_lun_fsync_sub(fsg->luns + i);
+		down_write(&fsg->filesem);
+		if (fsg->config != 0){
+			for (i = 0; i < fsg->nluns; ++i)
+				fsg_lun_fsync_sub(fsg->luns + i);
+#if defined(CONFIG_LAB126)
+			send_offline_uevent(fsg, 1);
+#endif
+		}
 		do_set_config(fsg, 0);		// Unconfigured state
+		up_write(&fsg->filesem);
 		break;
 
 	case FSG_STATE_EXIT:
@@ -3048,10 +3257,12 @@ static int fsg_main_thread(void *fsg_)
 	/* Allow the thread to be frozen */
 	set_freezable();
 
+#ifndef CONFIG_FSL_UTP
 	/* Arrange for userspace references to be interpreted as kernel
 	 * pointers.  That way we can pass a kernel pointer to a routine
 	 * that expects a __user pointer and it will work okay. */
 	set_fs(get_ds());
+#endif
 
 	/* The main loop */
 	while (fsg->state != FSG_STATE_TERMINATED) {
@@ -3059,6 +3270,23 @@ static int fsg_main_thread(void *fsg_)
 			handle_exception(fsg);
 			continue;
 		}
+
+#if defined(CONFIG_LAB126)
+
+		if(test_and_clear_bit(SUSPEND_PENDING, &fsg->atomic_bitflags)){
+			if (fsg->curlun != NULL) {
+				fsg->curlun->prevent_medium_removal = 0;
+				send_offline_uevent(fsg, 0);
+				set_drivemode_online(test_bit(ONLINE, &fsg->atomic_bitflags));
+			}
+		}
+
+		if(test_and_clear_bit(RESUME_PENDING, &fsg->atomic_bitflags)){
+				send_online_uevent(fsg);
+				set_drivemode_online(test_bit(ONLINE, &fsg->atomic_bitflags));
+		}
+
+#endif
 
 		if (!fsg->running) {
 			sleep_thread(fsg);
@@ -3088,7 +3316,7 @@ static int fsg_main_thread(void *fsg_)
 		if (!exception_in_progress(fsg))
 			fsg->state = FSG_STATE_IDLE;
 		spin_unlock_irq(&fsg->lock);
-		}
+	}
 
 	spin_lock_irq(&fsg->lock);
 	fsg->thread_task = NULL;
@@ -3103,7 +3331,6 @@ static int fsg_main_thread(void *fsg_)
 	complete_and_exit(&fsg->thread_notifier, 0);
 }
 
-
 /*-------------------------------------------------------------------------*/
 
 
@@ -3112,6 +3339,19 @@ static DEVICE_ATTR(ro, 0444, fsg_show_ro, NULL);
 static DEVICE_ATTR(nofua, 0644, fsg_show_nofua, NULL);
 static DEVICE_ATTR(file, 0444, fsg_show_file, NULL);
 
+#if defined(CONFIG_LAB126)
+static ssize_t
+show_online(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct rw_semaphore	*filesem = dev_get_drvdata(dev);
+	struct fsg_dev		*fsg =
+		container_of(filesem, struct fsg_dev, filesem);
+
+	return sprintf(buf, "%d\n", test_bit(ONLINE, &fsg->atomic_bitflags));
+}
+
+static DEVICE_ATTR(online, 0444, show_online, NULL);
+#endif
 
 /*-------------------------------------------------------------------------*/
 
@@ -3119,6 +3359,7 @@ static void fsg_release(struct kref *ref)
 {
 	struct fsg_dev	*fsg = container_of(ref, struct fsg_dev, ref);
 
+	DBG(fsg, "%s:%s:%d", __FILE__,__FUNCTION__,__LINE__);
 	kfree(fsg->luns);
 	kfree(fsg);
 }
@@ -3129,6 +3370,7 @@ static void lun_release(struct device *dev)
 	struct fsg_dev		*fsg =
 		container_of(filesem, struct fsg_dev, filesem);
 
+	DBG(fsg, "%s:%s:%d", __FILE__,__FUNCTION__,__LINE__);
 	kref_put(&fsg->ref, fsg_release);
 }
 
@@ -3139,21 +3381,16 @@ static void /* __init_or_exit */ fsg_unbind(struct usb_gadget *gadget)
 	struct fsg_lun		*curlun;
 	struct usb_request	*req = fsg->ep0req;
 
-	DBG(fsg, "unbind\n");
+	printk(KERN_INFO"%s:%d unbind\n",__FUNCTION__,__LINE__);
 	clear_bit(REGISTERED, &fsg->atomic_bitflags);
 
-	/* Unregister the sysfs attribute files and the LUNs */
-	for (i = 0; i < fsg->nluns; ++i) {
-		curlun = &fsg->luns[i];
-		if (curlun->registered) {
-			device_remove_file(&curlun->dev, &dev_attr_nofua);
-			device_remove_file(&curlun->dev, &dev_attr_ro);
-			device_remove_file(&curlun->dev, &dev_attr_file);
-			fsg_lun_close(curlun);
-			device_unregister(&curlun->dev);
-			curlun->registered = 0;
-		}
-	}
+#if defined(CONFIG_LAB126)
+	cancel_delayed_work(&fsg->synchronize_cache_work);
+
+	flush_work_sync(&fsg->susp_work);
+
+	send_offline_uevent(fsg, 1);
+#endif
 
 	/* If the thread isn't already dead, tell it to exit now */
 	if (fsg->state != FSG_STATE_TERMINATED) {
@@ -3162,6 +3399,25 @@ static void /* __init_or_exit */ fsg_unbind(struct usb_gadget *gadget)
 
 		/* The cleanup routine waits for this completion also */
 		complete(&fsg->thread_notifier);
+	}
+
+	/* Unregister the sysfs attribute files and the LUNs */
+	for (i = 0; i < fsg->nluns; ++i) {
+		curlun = &fsg->luns[i];
+		if (curlun->registered) {
+			device_remove_file(&curlun->dev, &dev_attr_nofua);
+			device_remove_file(&curlun->dev, &dev_attr_ro);
+			device_remove_file(&curlun->dev, &dev_attr_file);
+#if defined(CONFIG_LAB126)
+			device_remove_file(&curlun->dev, &dev_attr_online);
+#endif
+			DBG(fsg, "%s:%d", __FUNCTION__,__LINE__);
+			down_write(&fsg->filesem);
+			fsg_lun_close(curlun);
+			up_write(&fsg->filesem);
+			device_unregister(&curlun->dev);
+			curlun->registered = 0;
+		}
 	}
 
 	/* Free the data buffers */
@@ -3175,6 +3431,9 @@ static void /* __init_or_exit */ fsg_unbind(struct usb_gadget *gadget)
 	}
 
 	set_gadget_data(gadget, NULL);
+#ifdef CONFIG_FSL_UTP
+	utp_exit(fsg);
+#endif
 }
 
 
@@ -3208,6 +3467,17 @@ static int __init check_parameters(struct fsg_dev *fsg)
 	}
 
 	prot = simple_strtol(mod_data.protocol_parm, NULL, 0);
+
+#ifdef CONFIG_FSL_UTP
+	mod_data.can_stall = 0;
+	mod_data.removable = 1;
+	mod_data.nluns = 1;
+	mod_data.file[0] = NULL;
+	mod_data.vendor = 0x066F;
+	mod_data.product = 0x37FF;
+	pr_info("%s:UTP settings are in place now, overriding defaults\n",
+		__func__);
+#endif
 
 #ifdef CONFIG_USB_FILE_STORAGE_TEST
 	if (strnicmp(mod_data.transport_parm, "BBB", 10) == 0) {
@@ -3260,6 +3530,9 @@ static int __init check_parameters(struct fsg_dev *fsg)
 
 #endif /* CONFIG_USB_FILE_STORAGE_TEST */
 
+#if defined(CONFIG_LAB126)
+	fsg_strings[FSG_STRING_SERIAL - 1].s = lab126_serial_number;
+#else
 	/* Serial string handling.
 	 * On a real device, the serial string would be loaded
 	 * from permanent storage. */
@@ -3294,12 +3567,15 @@ static int __init check_parameters(struct fsg_dev *fsg)
  no_serial:
 		device_desc.iSerialNumber = 0;
 	}
+#endif // defined(CONFIG_LAB126)
 
 	return 0;
 }
+#ifdef CONFIG_FSL_UTP
+#include "fsl_updater.c"
+#endif
 
-
-static int __init fsg_bind(struct usb_gadget *gadget)
+static int __ref fsg_bind(struct usb_gadget *gadget)
 {
 	struct fsg_dev		*fsg = the_fsg;
 	int			rc;
@@ -3308,6 +3584,8 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	struct usb_ep		*ep;
 	struct usb_request	*req;
 	char			*pathbuf, *p;
+
+	printk(KERN_INFO"%s:%d unbind\n",__FUNCTION__,__LINE__);
 
 	fsg->gadget = gadget;
 	set_gadget_data(gadget, fsg);
@@ -3329,6 +3607,9 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	/* Only for removable media? */
 	dev_attr_nofua.attr.mode = 0644;
 	dev_attr_nofua.store = fsg_store_nofua;
+#ifdef CONFIG_FSL_UTP
+	utp_init(fsg);
+#endif
 
 	/* Find out how many LUNs there should be */
 	i = mod_data.nluns;
@@ -3381,6 +3662,12 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 		rc = device_create_file(&curlun->dev, &dev_attr_file);
 		if (rc)
 			goto out;
+
+#if defined(CONFIG_LAB126)
+		rc = device_create_file(&curlun->dev, &dev_attr_online);
+		if (rc)
+			goto out;
+#endif
 
 		if (mod_data.file[i] && *mod_data.file[i]) {
 			rc = fsg_lun_open(curlun, mod_data.file[i]);
@@ -3473,10 +3760,12 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 	/* This should reflect the actual gadget power source */
 	usb_gadget_set_selfpowered(gadget);
 
+#ifndef CONFIG_LAB126
 	snprintf(fsg_string_manufacturer, sizeof fsg_string_manufacturer,
 			"%s %s with %s",
 			init_utsname()->sysname, init_utsname()->release,
 			gadget->name);
+#endif
 
 	fsg->thread_task = kthread_create(fsg_main_thread, fsg,
 			"file-storage-gadget");
@@ -3518,6 +3807,11 @@ static int __init fsg_bind(struct usb_gadget *gadget)
 
 	set_bit(REGISTERED, &fsg->atomic_bitflags);
 
+#if defined(CONFIG_LAB126)
+	fsg->ms_keepalive = 0;
+	INIT_DELAYED_WORK(&fsg->synchronize_cache_work, do_synchronize_cache_work);
+#endif
+
 	/* Tell the thread to start working */
 	wake_up_process(fsg->thread_task);
 	return 0;
@@ -3533,23 +3827,81 @@ out:
 	return rc;
 }
 
-
 /*-------------------------------------------------------------------------*/
 
 static void fsg_suspend(struct usb_gadget *gadget)
 {
 	struct fsg_dev		*fsg = get_gadget_data(gadget);
 
-	DBG(fsg, "suspend\n");
+	printk(KERN_INFO"%s:%d\n",__FUNCTION__,__LINE__);
 	set_bit(SUSPENDED, &fsg->atomic_bitflags);
+
+#if defined(CONFIG_LAB126)
+
+	set_bit(SUSPEND_PENDING, &fsg->atomic_bitflags);
+	clear_bit(RESUME_PENDING, &fsg->atomic_bitflags);
+
+	/* If the last command we got before the suspend signal was to
+	 * SYNCHRONIZE_CACHE, then we're going to guess that we're talking to
+	 * Windows XP or Windows 8 and what our host *actually* wants is to
+	 * disconnect.  This behavior happens when the user ejects the device from
+	 * the task bar. */
+	switch (fsg->cmnd[0]) {
+
+	case SYNCHRONIZE_CACHE:
+		DBG(fsg, "%s:%d fsg->cmnd[0] == SYNCHRONIZE_CACHE.",  __func__, __LINE__);
+		if (cancel_delayed_work(&fsg->synchronize_cache_work))
+		{
+			INFO(fsg, "Guessing that we were ejected from the Windows taskbar:"
+			    " disconnecting\n");
+			raise_exception(fsg, FSG_STATE_DISCONNECT);
+		} else {
+			INFO(fsg, "%s:%d SYNCHRONIZE_CACHE happened too long ago for us to"
+			" interpret this suspend as a disconnect.  Staying connected.\n",
+			__func__, __LINE__);
+		}
+		break;
+
+	case TEST_UNIT_READY:
+		/* Windows XP sometimes sends a random TEST_UNIT_READY after suspend
+		 * when we're ejected from the task bar.  We'll ignore it just this
+		 * once. */
+		DBG(fsg, "%s:%d fsg->cmnd[0] == TEST_UNIT_READY.",  __func__, __LINE__);
+		break;
+
+	default:
+		/* We got a suspend that was preceded by neither SYNCHRONIZE_CACHE nor
+		 * TEST_UNIT_READY, so we're probably not talking to a Windows host
+		 * that wants to disconnect.  Let's make sure we don't disconnect. */
+		DBG(fsg, "%s:%d fsg->cmnd[0] != SYNCHRONIZE_CACHE.\n",  __func__, __LINE__);
+		cancel_delayed_work(&fsg->synchronize_cache_work);
+	}
+
+#endif
 }
 
 static void fsg_resume(struct usb_gadget *gadget)
 {
 	struct fsg_dev		*fsg = get_gadget_data(gadget);
 
-	DBG(fsg, "resume\n");
+	printk(KERN_INFO"%s:%d\n",__FUNCTION__,__LINE__);
 	clear_bit(SUSPENDED, &fsg->atomic_bitflags);
+
+#if defined(CONFIG_LAB126)
+	/*
+	 * The platform doesn't properly reattach to USB hosts going from
+	 * suspend to resume when the USB bus remains under power. 
+	 * This makes sure
+	 * the resume event is raise through the device stack.
+	 */
+
+	cancel_delayed_work(&fsg->synchronize_cache_work);
+	set_bit(RESUME_PENDING, &fsg->atomic_bitflags);
+	clear_bit(SUSPEND_PENDING, &fsg->atomic_bitflags);
+	wakeup_thread(fsg);
+
+#endif
+
 }
 
 
@@ -3589,7 +3941,6 @@ static int __init fsg_alloc(void)
 	init_rwsem(&fsg->filesem);
 	kref_init(&fsg->ref);
 	init_completion(&fsg->thread_notifier);
-
 	the_fsg = fsg;
 	return 0;
 }
@@ -3600,6 +3951,9 @@ static int __init fsg_init(void)
 	int		rc;
 	struct fsg_dev	*fsg;
 
+#if defined(CONFIG_LAB126)
+	set_drivemode_online(0);
+#endif
 	if ((rc = fsg_alloc()) != 0)
 		return rc;
 	fsg = the_fsg;

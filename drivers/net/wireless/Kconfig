@@ -268,7 +268,13 @@ config MWL8K
 	  To compile this driver as a module, choose M here: the module
 	  will be called mwl8k.  If unsure, say N.
 
-source "drivers/net/wireless/ath/Kconfig"
+config BUILD_DIAGS_ONLY
+	string
+	option env="BUILD_DIAGS_ONLY" 
+
+# LAB126 #
+#source "drivers/net/wireless/ath/Kconfig"
+# END LAB126 #
 source "drivers/net/wireless/b43/Kconfig"
 source "drivers/net/wireless/b43legacy/Kconfig"
 source "drivers/net/wireless/hostap/Kconfig"
@@ -285,5 +291,14 @@ source "drivers/net/wireless/wl1251/Kconfig"
 source "drivers/net/wireless/wl12xx/Kconfig"
 source "drivers/net/wireless/zd1211rw/Kconfig"
 source "drivers/net/wireless/mwifiex/Kconfig"
+#source "drivers/net/wireless/ath6kl/Kconfig"
+# LAB126 #
+if BUILD_DIAGS_ONLY=true
+source "drivers/net/wireless/ar6003/Kconfig"
+endif
+if BUILD_DIAGS_ONLY!=true
+source "compat-wireless/Kconfig"
+endif
+# END LAB126 #
 
 endif # WLAN

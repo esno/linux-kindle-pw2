@@ -110,6 +110,9 @@ static void buffer_io_error(struct buffer_head *bh)
 	printk(KERN_ERR "Buffer I/O error on device %s, logical block %Lu\n",
 			bdevname(bh->b_bdev, b),
 			(unsigned long long)bh->b_blocknr);
+	#if defined(CONFIG_LAB126)
+	dump_stack();
+	#endif
 }
 
 /*

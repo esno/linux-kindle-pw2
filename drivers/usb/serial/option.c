@@ -490,6 +490,13 @@ static void option_instat_callback(struct urb *urb);
 /* MediaTek products */
 #define MEDIATEK_VENDOR_ID			0x0e8d
 
+/* USI products */
+#define USI_UNA_VENDOR_ID			0x0e8d
+#define USI_UNAP_PRODUCT_ECM		        0x00a7
+/* Amazon Products */
+#define LAB126_VENDOR_ID			0x1949
+#define LAB126_PRODUCT_ELMO			0x9001
+
 /* some devices interfaces need special handling due to a number of reasons */
 enum option_blacklist_reason {
 		OPTION_BLACKLIST_NONE = 0,
@@ -1214,6 +1221,14 @@ static const struct usb_device_id option_ids[] = {
 	{ USB_DEVICE_AND_INTERFACE_INFO(MEDIATEK_VENDOR_ID, 0x00a1, 0xff, 0x02, 0x01) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(MEDIATEK_VENDOR_ID, 0x00a2, 0xff, 0x00, 0x00) },
 	{ USB_DEVICE_AND_INTERFACE_INFO(MEDIATEK_VENDOR_ID, 0x00a2, 0xff, 0x02, 0x01) },        /* MediaTek MT6276M modem & app port */
+	{ USB_DEVICE_AND_INTERFACE_INFO(USI_UNA_VENDOR_ID, USI_UNAP_PRODUCT_ECM, 0xff, 0x00, 0x00) },	/* USI product - ECM */
+	{ USB_DEVICE_AND_INTERFACE_INFO(USI_UNA_VENDOR_ID, USI_UNAP_PRODUCT_ECM, 0xff, 0x02, 0x01) },
+	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x9001) },
+	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x9002) },
+	{ USB_DEVICE(QUALCOMM_VENDOR_ID, 0x9004) },
+	{ USB_DEVICE(LAB126_VENDOR_ID, LAB126_PRODUCT_ELMO) },
+	{ USB_DEVICE(LAB126_VENDOR_ID, 0x9002) },
+	{ USB_DEVICE(LAB126_VENDOR_ID, 0x9004) },
 	{ } /* Terminating entry */
 };
 MODULE_DEVICE_TABLE(usb, option_ids);
@@ -1384,9 +1399,17 @@ static int option_probe(struct usb_serial *serial,
 		serial->interface->cur_altsetting->desc.bInterfaceClass != USB_CLASS_CDC_DATA)
 		return -ENODEV;
 
+	/* Don't bind network interaces on USI UNA+/UNA-Lite modem
+	 * for interface number is less than 2 
+         */
+	if (serial->dev->descriptor.idProduct == USI_UNAP_PRODUCT_ECM &&
+		serial->interface->cur_altsetting->desc.bInterfaceNumber < 2)
+		return -ENODEV;
+
 	data = serial->private = kzalloc(sizeof(struct usb_wwan_intf_private), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
+
 	data->send_setup = option_send_setup;
 	spin_lock_init(&data->susp_lock);
 	data->private = (void *)id->driver_info;
@@ -1437,7 +1460,9 @@ static void option_instat_callback(struct urb *urb)
 			dbg("%s: type %x req %x", __func__,
 				req_pkt->bRequestType, req_pkt->bRequest);
 		}
-	} else
+	} else if (status == -ESHUTDOWN || status == -ENOENT)
+		dbg("%s: error %d", __func__, status);
+	else
 		err("%s: error %d", __func__, status);
 
 	/* Resubmit urb so we continue receiving IRQ data */

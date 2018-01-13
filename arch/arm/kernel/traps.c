@@ -130,6 +130,7 @@ static void dump_instr(const char *lvl, struct pt_regs *regs)
 	mm_segment_t fs;
 	char str[sizeof("00000000 ") * 5 + 2 + 1], *p = str;
 	int i;
+	unsigned int val = 0;
 
 	/*
 	 * We need to switch to kernel mode so that we can use __get_user
@@ -140,7 +141,7 @@ static void dump_instr(const char *lvl, struct pt_regs *regs)
 	set_fs(KERNEL_DS);
 
 	for (i = -4; i < 1 + !!thumb; i++) {
-		unsigned int val, bad;
+		unsigned int bad;
 
 		if (thumb)
 			bad = __get_user(val, &((u16 *)addr)[i]);
@@ -155,7 +156,28 @@ static void dump_instr(const char *lvl, struct pt_regs *regs)
 			break;
 		}
 	}
+#ifdef CONFIG_LAB126
+/* This instruction is a test instruction that openssl uses to figure out what
+ * cpu features are supported. It (openssl) registers a handler, and gracefully
+ * handles this signal. We chose to single out this in the kernel because we 
+ * see value in the kernel readouts for illegal instructions, but want to avoid
+ * log-spam.
+ *
+ * The instruction in question is:
+ * mrc<any cond> 15, 0, <any cpu register>, cr9, cr13, 0
+ */
+#define OPENSSL_TEST_INSTR 0x0e190f1d
+#define OPENSSL_TEST_MASK  0x0fff0fff
+
+	if ((val & OPENSSL_TEST_MASK) != OPENSSL_TEST_INSTR)  {
+		unsigned long pc = instruction_pointer(regs);
+		printk(KERN_INFO "%s (%d): undefined instruction: pc=%08lx\n",
+			current->comm, task_pid_nr(current), pc);
+		printk("%sCode: %s\n", lvl, str);
+	}
+#else
 	printk("%sCode: %s\n", lvl, str);
+#endif 
 
 	set_fs(fs);
 }
@@ -365,10 +387,11 @@ asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 	if (call_undef_hook(regs, instr) == 0)
 		return;
 
-#ifdef CONFIG_DEBUG_USER
-	if (user_debug & UDBG_UNDEFINED) {
-		printk(KERN_INFO "%s (%d): undefined instruction: pc=%p\n",
-			current->comm, task_pid_nr(current), pc);
+#if defined(CONFIG_DEBUG_USER) || defined(CONFIG_LAB126)
+#ifndef CONFIG_LAB126
+	if (user_debug & UDBG_UNDEFINED)
+#endif
+	{
 		dump_instr(KERN_INFO, regs);
 	}
 #endif

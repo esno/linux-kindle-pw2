@@ -337,6 +337,20 @@ static void task_cpus_allowed(struct seq_file *m, struct task_struct *task)
 	seq_putc(m, '\n');
 }
 
+int proc_pid_anon(struct seq_file *m, struct pid_namespace *ns,
+			struct pid *pid, struct task_struct *task)
+{
+	struct mm_struct *mm = get_task_mm(task);
+	if (mm) {
+		seq_printf(m, "%08lx\n", get_mm_counter(mm, MM_ANONPAGES));
+		mmput(mm);
+	} else {
+		seq_printf(m, "%08x\n", 0);
+	}
+
+	return 0;
+}
+
 int proc_pid_status(struct seq_file *m, struct pid_namespace *ns,
 			struct pid *pid, struct task_struct *task)
 {
@@ -532,15 +546,16 @@ int proc_tgid_stat(struct seq_file *m, struct pid_namespace *ns,
 int proc_pid_statm(struct seq_file *m, struct pid_namespace *ns,
 			struct pid *pid, struct task_struct *task)
 {
-	unsigned long size = 0, resident = 0, shared = 0, text = 0, data = 0;
+	unsigned long size = 0, resident = 0, shared = 0, text = 0, data = 0, anon = 0;
 	struct mm_struct *mm = get_task_mm(task);
 
 	if (mm) {
 		size = task_statm(mm, &shared, &text, &data, &resident);
+		anon = get_mm_anon(mm);
 		mmput(mm);
 	}
-	seq_printf(m, "%lu %lu %lu %lu 0 %lu 0\n",
-			size, resident, shared, text, data);
+	seq_printf(m, "%lu %lu %lu %lu 0 %lu 0 %lu\n",
+			size, resident, shared, text, data, anon);
 
 	return 0;
 }

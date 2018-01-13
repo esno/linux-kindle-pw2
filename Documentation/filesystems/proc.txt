@@ -122,6 +122,7 @@ subdirectory has the entries listed in Table 1-1.
 Table 1-1: Process specific entries in /proc
 ..............................................................................
  File		Content
+ anon           Total number of anonomyous pages mapped in the process.
  clear_refs	Clears page referenced bits shown in smaps output
  cmdline	Command line arguments
  cpu		Current and last cpu in which it was executed	(2.4)(smp)
@@ -409,6 +410,13 @@ Any other value written to /proc/PID/clear_refs will have no effect.
 The /proc/pid/pagemap gives the PFN, which can be used to find the pageflags
 using /proc/kpageflags and number of times a page is mapped using
 /proc/kpagecount. For detailed explanation, see Documentation/vm/pagemap.txt.
+..............................................................................
+
+The /proc/PID/anon file shows the current total count of anonymous pages mapped
+by the process in hex. The size this page count represents will match the sum of
+all Anonymous lines in /proc/PID/smaps. The reason this exists as a separate
+entry is that the kernel alredy tracks this count per process, and will not need
+to scan the process' mappings.
 
 1.2 Kernel data
 ---------------

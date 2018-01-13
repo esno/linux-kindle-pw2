@@ -991,6 +991,15 @@ config PRINTK
 	  very difficult to diagnose system problems, saying N here is
 	  strongly discouraged.
 
+config LAB126_PRINTK_BUFFER
+	default y
+	bool "Enable support for recovered printk output" if EXPERT
+	help
+	  This option enables the printk buffer to be placed in a 
+	  deterministic place at boot, and to save the contents of this
+	  location. The previous contents will be made available by 
+	  proc entry.
+
 config BUG
 	bool "BUG() support" if EXPERT
 	default y

@@ -88,10 +88,18 @@ void __init early_init_dt_setup_initrd_arch(unsigned long start, unsigned long e
  */
 struct meminfo meminfo;
 
+struct meminfo *get_meminfo(void)
+{
+	return &meminfo;
+}
+extern unsigned int dma_reserved_count;
+extern unsigned int rss_sum_by_tasks(void);
+
 void show_mem(unsigned int filter)
 {
-	int free = 0, total = 0, reserved = 0;
-	int shared = 0, cached = 0, slab = 0, i;
+	int free = 0, total = 0, reserved = 0, sharedp = 0, sharedp_mapped = 0;
+	int shared = 0, cached = 0, slab = 0, i, shared_mapped = 0, user_pages =0;
+	int user_cache =0, kernel_cache = 0;
 	struct meminfo * mi = &meminfo;
 
 	printk("Mem-info:\n");
@@ -118,8 +126,20 @@ void show_mem(unsigned int filter)
 				slab++;
 			else if (!page_count(page))
 				free++;
-			else
+			else { 
 				shared += page_count(page) - 1;
+				if (page_count(page) > 1)
+					sharedp++;
+				if (page_mapped(page)) {
+					if (page_mapcount(page) > 1)
+						sharedp_mapped++;
+					shared_mapped += page_mapcount(page) - 1;
+					user_pages++;
+					if (page_mapping(page))
+						user_cache++;
+				} else if (page_mapping(page))
+					kernel_cache++;
+			}
 			page++;
 		} while (page < end);
 	}
@@ -128,8 +148,17 @@ void show_mem(unsigned int filter)
 	printk("%d free pages\n", free);
 	printk("%d reserved pages\n", reserved);
 	printk("%d slab pages\n", slab);
-	printk("%d pages shared\n", shared);
+	printk("%d shared page count\n", shared);
+	printk("%d shared pages\n",sharedp);
+	printk("%d mapped shared page count\n", shared_mapped);
+        printk("%d mapped shared pages\n",sharedp_mapped);
 	printk("%d pages swap cached\n", cached);
+	printk("%d dma reserved pages\n",dma_reserved_count);
+	printk("%d total user pages\n",user_pages);
+	printk("%d RSS sum by tasks\n",rss_sum_by_tasks());
+	printk("%d RSS sum by page stats\n", user_pages+shared_mapped);
+	printk("%d user cache pages\n", user_cache);
+	printk("%d kernel cache pages\n", kernel_cache);
 }
 
 static void __init find_limits(unsigned long *min, unsigned long *max_low,
@@ -167,6 +196,12 @@ static void __init arm_bootmem_init(unsigned long start_pfn,
 	phys_addr_t bitmap;
 	pg_data_t *pgdat;
 
+#ifdef CONFIG_FALCON
+	{
+		extern void __init falcon_mm_init(unsigned long start_pfn, unsigned long end_pfn);
+		falcon_mm_init(start_pfn, end_pfn);
+	}
+#endif
 	/*
 	 * Allocate the bootmem bitmap page.  This must be in a region
 	 * of memory which has already been mapped.
@@ -354,6 +389,19 @@ void __init arm_memblock_init(struct meminfo *mi, struct machine_desc *mdesc)
 	arm_mm_memblock_reserve();
 	arm_dt_memblock_reserve();
 
+#if defined(CONFIG_FALCON) && defined(CONFIG_HAVE_MEMBLOCK)
+	{
+		extern void falcon_mem_reserve(void);
+		falcon_mem_reserve();
+	}
+#if defined(CONFIG_FALCON_PSEUDO_NMI)
+	{
+		extern void falcon_pnmi_handler_reserve(void);
+		falcon_pnmi_handler_reserve();
+	}
+#endif
+#endif
+	
 	/* reserve any platform specific memblock areas */
 	if (mdesc->reserve)
 		mdesc->reserve();

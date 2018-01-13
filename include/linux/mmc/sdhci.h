@@ -16,6 +16,22 @@
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/mmc/host.h>
+#include <linux/mutex.h>
+
+struct sdhci_host_next {
+	unsigned int	sg_count;
+	s32		cookie;
+};
+
+#ifdef DEVELOPMENT_MODE
+struct log_data {
+	u64 time;
+	u32 cmd;
+	u32 arg;
+};
+
+#define MAX_LOG_ENTRIES	8192
+#endif
 
 struct sdhci_host {
 	/* Data set by hardware interface driver */
@@ -88,6 +104,10 @@ struct sdhci_host {
 /* The read-only detection via SDHCI_PRESENT_STATE register is unstable */
 #define SDHCI_QUIRK_UNSTABLE_RO_DETECT			(1<<31)
 
+	unsigned int quirks2;   /* More deviations from spec. */
+#define SDHCI_QUIRK_BROKEN_AUTO_CMD23			(1<<0)
+#define SDHCI_QUIRK_NONSTD_SDIO_POWER			(1<<1)
+
 	int irq;		/* Device IRQ */
 	void __iomem *ioaddr;	/* Mapped address */
 
@@ -144,6 +164,17 @@ struct sdhci_host {
 	struct tasklet_struct card_tasklet;	/* Tasklet structures */
 	struct tasklet_struct finish_tasklet;
 
+#ifdef CONFIG_LAB126	
+	struct work_struct*            mmcreinit_work; /* MMC Reinit */
+	unsigned int                   mmc_resetting;  // Resetting counter:
+	                                               // - It's used an index into an array for exponential backoff times.
+	                                               // - It's used as a counter for maximum number of retries.
+	                                               //
+	                                               // When CTOE happens, we will try to reset eMMC. If it still fails, we backoff longer time 
+	                                               // and retry resetting eMMC for better chance to recovery successfully. And we retry MAX_MMC_RESET_TRIES times.
+	long long                      mmc_ctoe_start_time;
+#endif // CONFIG_LAB126	
+
 	struct timer_list timer;	/* Timer for timeouts */
 
 	unsigned int caps;	/* Alternative capabilities */
@@ -154,12 +185,29 @@ struct sdhci_host {
 
 	wait_queue_head_t	buf_ready_int;	/* Waitqueue for Buffer Read Ready interrupt */
 	unsigned int		tuning_done;	/* Condition flag set when CMD19 succeeds */
-
+	struct mutex 		clk_mutex;
 	unsigned int		tuning_count;	/* Timer count for re-tuning */
 	unsigned int		tuning_mode;	/* Re-tuning mode supported by host */
 #define SDHCI_TUNING_MODE_1	0
 	struct timer_list	tuning_timer;	/* Timer for tuning */
+	unsigned int		tuning_min;
+	unsigned int		tuning_max;
+	unsigned int		tuning_step;
 
+	struct work_struct	sdio_wakeup_work;  /* Enable clock on SDIO interrupt */
+
+	struct delayed_work	clk_worker;	/* Clock delayed worker */
+#define SDHC_CLOCK_ALWAYS_ON	-1
+	int			clk_work_delay;
+	unsigned int		clk_mgr_en;
+	unsigned int		clk_status;
+	struct sdhci_host_next	next_data;
+
+#ifdef DEVELOPMENT_MODE
+	struct log_data *log_entries;
+	unsigned int log_curr;
+	int log_enabled;
+#endif
 	unsigned long private[0] ____cacheline_aligned;
 };
 #endif /* __SDHCI_H */

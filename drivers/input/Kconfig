@@ -161,6 +161,14 @@ config INPUT_APMPOWER
 	  To compile this driver as a module, choose M here: the
 	  module will be called apm-power.
 
+config LIS3DH_ACCELEROMETER
+        tristate "ST accelerometer LIS3DH"
+        depends on INPUT
+        help
+          Say Y here if you have a ST LIS3DH accelerometer connected to
+	  your system. If unsure, say N. To compile this driver as a mod
+	  ule, choose M here: the module will be called lis3dh_acc_misc.
+
 comment "Input Device Drivers"
 
 source "drivers/input/keyboard/Kconfig"

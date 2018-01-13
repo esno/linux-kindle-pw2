@@ -248,6 +248,11 @@ static inline void mmc_host_clk_exit(struct mmc_host *host)
 
 #endif
 
+#ifdef CONFIG_FALCON_WRAPPER
+struct mmc_host dummy_mmc0;
+int dummy_index;
+#endif
+
 /**
  *	mmc_alloc_host - initialise the per-host structure.
  *	@extra: sizeof private data structure
@@ -268,6 +273,12 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 		return NULL;
 
 	spin_lock(&mmc_host_lock);
+#ifdef CONFIG_FALCON_WRAPPER
+        /*
+         * Allocate id 0 for a dummy device so SDIO remains at mmc1.
+         */
+        err = idr_get_new(&mmc_host_idr, &dummy_mmc0, &dummy_index);
+#endif
 	err = idr_get_new(&mmc_host_idr, host, &host->index);
 	spin_unlock(&mmc_host_lock);
 	if (err)
@@ -331,6 +342,7 @@ int mmc_add_host(struct mmc_host *host)
 
 	led_trigger_register_simple(dev_name(&host->class_dev), &host->led);
 
+        mmc_print_init(host);
 #ifdef CONFIG_DEBUG_FS
 	mmc_add_host_debugfs(host);
 #endif
@@ -353,6 +365,8 @@ EXPORT_SYMBOL(mmc_add_host);
  */
 void mmc_remove_host(struct mmc_host *host)
 {
+        int retval;
+
 	unregister_pm_notifier(&host->pm_notify);
 	mmc_stop_host(host);
 
@@ -365,6 +379,14 @@ void mmc_remove_host(struct mmc_host *host)
 	led_trigger_unregister_simple(host->led);
 
 	mmc_host_clk_exit(host);
+
+        /*
+         * Dump all messages and free circular buffer.
+         */
+	do {
+		retval = mmc_dump_from_fifo(host);
+	} while (retval != ENOENT && retval != EPERM);
+        mmc_print_destroy(host);
 }
 
 EXPORT_SYMBOL(mmc_remove_host);

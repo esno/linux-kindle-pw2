@@ -15,6 +15,9 @@ struct ratelimit_state {
 	int		printed;
 	int		missed;
 	unsigned long	begin;
+#ifdef CONFIG_UEVENT_SHRINKER
+	int		suppress_missed_print;
+#endif
 };
 
 #define DEFINE_RATELIMIT_STATE(name, interval_init, burst_init)		\
@@ -34,6 +37,9 @@ static inline void ratelimit_state_init(struct ratelimit_state *rs,
 	rs->printed = 0;
 	rs->missed = 0;
 	rs->begin = 0;
+#ifdef CONFIG_UEVENT_SHRINKER
+	rs->suppress_missed_print = 0;
+#endif
 }
 
 extern struct ratelimit_state printk_ratelimit_state;

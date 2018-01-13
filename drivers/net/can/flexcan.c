@@ -36,6 +36,11 @@
 #include <linux/platform_device.h>
 
 #include <mach/clock.h>
+#include <mach/hardware.h>
+
+#ifdef CONFIG_ARCH_MXC
+#include <mach/iomux-v3.h>
+#endif
 
 #define DRV_NAME			"flexcan"
 
@@ -162,8 +167,20 @@ struct flexcan_regs {
 	u32 imask1;		/* 0x28 */
 	u32 iflag2;		/* 0x2c */
 	u32 iflag1;		/* 0x30 */
-	u32 _reserved2[19];
+	u32 crl2;		/* 0x34 */
+	u32 esr2;		/* 0x38 */
+	u32 _reserved2[2];
+	u32 crcr;		/* 0x44 */
+	u32 rxfgmask;		/* 0x48 */
+	u32 rxfir;		/* 0x4c */
+	u32 _reserved3[12];
 	struct flexcan_mb cantxfg[64];
+};
+
+enum flexcan_ip_version {
+	FLEXCAN_VER_3_0_0,
+	FLEXCAN_VER_3_0_4,
+	FLEXCAN_VER_10_0_12,
 };
 
 struct flexcan_priv {
@@ -177,6 +194,8 @@ struct flexcan_priv {
 
 	struct clk *clk;
 	struct flexcan_platform_data *pdata;
+	enum flexcan_ip_version version;
+	int id;
 };
 
 static struct can_bittiming_const flexcan_bittiming_const = {
@@ -205,6 +224,26 @@ static inline int flexcan_has_and_handle_berr(const struct flexcan_priv *priv,
 {
 	return (priv->can.ctrlmode & CAN_CTRLMODE_BERR_REPORTING) &&
 		(reg_esr & FLEXCAN_ESR_ERR_BUS);
+}
+
+static inline void flexcan_enter_stop(struct flexcan_priv *priv)
+{
+	/* enable stop request for wakeup */
+	if (priv->version >= FLEXCAN_VER_10_0_12)
+		/* CAN1/CAN2_STOP_REQ bit 28/29 in group 13 */
+		mxc_iomux_set_gpr_register(13, 28 + priv->id, 1, 1);
+
+	udelay(10);
+}
+
+static inline void flexcan_exit_stop(struct flexcan_priv *priv)
+{
+	/* remove stop request */
+	if (priv->version >= FLEXCAN_VER_10_0_12)
+		/* CAN1/CAN2_STOP_REQ bit 28/29 in group 13 */
+		mxc_iomux_set_gpr_register(13, 28 + priv->id, 1, 0);
+
+	udelay(10);
 }
 
 static inline void flexcan_chip_enable(struct flexcan_priv *priv)
@@ -421,10 +460,14 @@ static void do_state(struct net_device *dev,
 static int flexcan_poll_state(struct net_device *dev, u32 reg_esr)
 {
 	struct flexcan_priv *priv = netdev_priv(dev);
+	struct flexcan_regs __iomem *regs = priv->base;
 	struct sk_buff *skb;
 	struct can_frame *cf;
 	enum can_state new_state;
 	int flt;
+
+	/* clear state error if any (write 1 to clear)*/
+	writel(reg_esr, &regs->esr);
 
 	flt = reg_esr & FLEXCAN_ESR_FLT_CONF_MASK;
 	if (likely(flt == FLEXCAN_ESR_FLT_CONF_ACTIVE)) {
@@ -555,6 +598,11 @@ static irqreturn_t flexcan_irq(int irq, void *dev_id)
 	reg_esr = readl(&regs->esr);
 	writel(FLEXCAN_ESR_ERR_INT, &regs->esr);	/* ACK err IRQ */
 
+	if (reg_esr & FLEXCAN_ESR_WAK_INT) {
+		flexcan_exit_stop(priv);
+		writel(FLEXCAN_ESR_WAK_INT, &regs->esr);
+	}
+
 	/*
 	 * schedule NAPI in case of:
 	 * - rx IRQ
@@ -673,12 +721,14 @@ static int flexcan_chip_start(struct net_device *dev)
 	 * only supervisor access
 	 * enable warning int
 	 * choose format C
+	 * enable self wakeup
 	 *
 	 */
 	reg_mcr = readl(&regs->mcr);
 	reg_mcr |= FLEXCAN_MCR_FRZ | FLEXCAN_MCR_FEN | FLEXCAN_MCR_HALT |
 		FLEXCAN_MCR_SUPV | FLEXCAN_MCR_WRN_EN |
-		FLEXCAN_MCR_IDAM_C;
+		FLEXCAN_MCR_IDAM_C | FLEXCAN_MCR_WAK_MSK |
+		FLEXCAN_MCR_SLF_WAK;
 	dev_dbg(dev->dev.parent, "%s: writing mcr=0x%08x", __func__, reg_mcr);
 	writel(reg_mcr, &regs->mcr);
 
@@ -722,6 +772,10 @@ static int flexcan_chip_start(struct net_device *dev)
 	writel(0x0, &regs->rxgmask);
 	writel(0x0, &regs->rx14mask);
 	writel(0x0, &regs->rx15mask);
+
+	/* clear rx fifo global mask */
+	if (priv->version >= FLEXCAN_VER_10_0_12)
+		writel(0x0, &regs->rxfgmask);
 
 	flexcan_transceiver_switch(priv, 1);
 
@@ -896,6 +950,25 @@ static void __devexit unregister_flexcandev(struct net_device *dev)
 	unregister_candev(dev);
 }
 
+static struct platform_device_id flexcan_devtype[] = {
+	{
+		.name = "imx25-flexcan",
+		.driver_data = FLEXCAN_VER_3_0_0,
+	}, {
+		.name = "imx28-flexcan",
+		.driver_data = FLEXCAN_VER_3_0_4,
+	}, {
+		.name = "imx35-flexcan",
+		.driver_data = FLEXCAN_VER_3_0_0,
+	}, {
+		.name = "imx53-flexcan",
+		.driver_data = FLEXCAN_VER_3_0_0,
+	}, {
+		.name = "imx6q-flexcan",
+		.driver_data = FLEXCAN_VER_10_0_12,
+	},
+};
+
 static int __devinit flexcan_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
@@ -905,6 +978,9 @@ static int __devinit flexcan_probe(struct platform_device *pdev)
 	void __iomem *base;
 	resource_size_t mem_size;
 	int err, irq;
+
+	if (pdev->id < 0)
+		return -ENODEV;
 
 	clk = clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
@@ -953,7 +1029,9 @@ static int __devinit flexcan_probe(struct platform_device *pdev)
 	priv->base = base;
 	priv->dev = dev;
 	priv->clk = clk;
+	priv->id = pdev->id;
 	priv->pdata = pdev->dev.platform_data;
+	priv->version = pdev->id_entry->driver_data;
 
 	netif_napi_add(dev, &priv->napi, flexcan_poll, FLEXCAN_NAPI_WEIGHT);
 
@@ -1003,10 +1081,64 @@ static int __devexit flexcan_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int flexcan_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	struct net_device *dev = platform_get_drvdata(pdev);
+	struct flexcan_priv *priv = netdev_priv(dev);
+	int ret;
+
+	if (netif_running(dev)) {
+		netif_stop_queue(dev);
+		netif_device_detach(dev);
+
+		/* enter stop mode if device is up */
+		flexcan_enter_stop(priv);
+
+		ret = irq_set_irq_wake(dev->irq, 1);
+		if (ret)
+			return ret;
+	}
+
+	priv->can.state = CAN_STATE_SLEEPING;
+
+	return 0;
+}
+
+static int flexcan_resume(struct platform_device *pdev)
+{
+	struct net_device *dev = platform_get_drvdata(pdev);
+	struct flexcan_priv *priv = netdev_priv(dev);
+	int ret;
+
+	priv->can.state = CAN_STATE_ERROR_ACTIVE;
+
+	if (netif_running(dev)) {
+		ret = irq_set_irq_wake(dev->irq, 0);
+		if (ret)
+			return ret;
+
+		flexcan_exit_stop(priv);
+
+		netif_device_attach(dev);
+		netif_start_queue(dev);
+	}
+
+	return 0;
+}
+#else
+#define flexcan_suspend NULL
+#define flexcan_resume NULL
+#endif
+
+
 static struct platform_driver flexcan_driver = {
 	.driver.name = DRV_NAME,
 	.probe = flexcan_probe,
+	.id_table = flexcan_devtype,
 	.remove = __devexit_p(flexcan_remove),
+	.suspend = flexcan_suspend,
+	.resume = flexcan_resume,
 };
 
 static int __init flexcan_init(void)

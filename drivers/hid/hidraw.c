@@ -57,10 +57,7 @@ static ssize_t hidraw_read(struct file *file, char __user *buffer, size_t count,
 			set_current_state(TASK_INTERRUPTIBLE);
 
 			while (list->head == list->tail) {
-				if (file->f_flags & O_NONBLOCK) {
-					ret = -EAGAIN;
-					break;
-				}
+	
 				if (signal_pending(current)) {
 					ret = -ERESTARTSYS;
 					break;
@@ -69,7 +66,10 @@ static ssize_t hidraw_read(struct file *file, char __user *buffer, size_t count,
 					ret = -EIO;
 					break;
 				}
-
+				if (file->f_flags & O_NONBLOCK) {
+					ret = -EAGAIN;
+					break;
+				}
 				/* allow O_NONBLOCK to work well from other threads */
 				mutex_unlock(&list->read_mutex);
 				schedule();

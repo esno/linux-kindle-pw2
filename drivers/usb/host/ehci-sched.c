@@ -491,11 +491,13 @@ static int enable_periodic (struct ehci_hcd *ehci)
 	 * takes effect only at frame boundaries...
 	 */
 	status = handshake_on_error_set_halt(ehci, &ehci->regs->status,
-					     STS_PSS, 0, 9 * 125);
+					     STS_PSS, 0, 18 * 125);
+#ifndef CONFIG_LAB126
 	if (status) {
 		usb_hc_died(ehci_to_hcd(ehci));
 		return status;
 	}
+#endif
 
 	cmd = ehci_readl(ehci, &ehci->regs->command) | CMD_PSE;
 	ehci_writel(ehci, cmd, &ehci->regs->command);
@@ -532,12 +534,13 @@ static int disable_periodic (struct ehci_hcd *ehci)
 	 * takes effect only at frame boundaries...
 	 */
 	status = handshake_on_error_set_halt(ehci, &ehci->regs->status,
-					     STS_PSS, STS_PSS, 9 * 125);
+					     STS_PSS, STS_PSS, 18 * 125);
+#ifndef CONFIG_LAB126
 	if (status) {
 		usb_hc_died(ehci_to_hcd(ehci));
 		return status;
 	}
-
+#endif
 	cmd = ehci_readl(ehci, &ehci->regs->command) & ~CMD_PSE;
 	ehci_writel(ehci, cmd, &ehci->regs->command);
 	/* posted write ... */

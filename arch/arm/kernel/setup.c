@@ -50,6 +50,10 @@
 #include <asm/traps.h>
 #include <asm/unwind.h>
 
+#if defined(CONFIG_LAB126)
+#include <mach/boardid.h>
+#endif
+
 #if defined(CONFIG_DEPRECATED_PARAM_STRUCT)
 #include "compat.h"
 #endif
@@ -96,6 +100,44 @@ EXPORT_SYMBOL(system_serial_high);
 
 unsigned int elf_hwcap __read_mostly;
 EXPORT_SYMBOL(elf_hwcap);
+
+#if defined(CONFIG_LAB126)
+
+unsigned char system_rev16[REVISION16_SIZE];
+EXPORT_SYMBOL(system_rev16);
+
+unsigned char system_serial16[SERIAL16_SIZE];
+EXPORT_SYMBOL(system_serial16);
+
+unsigned char system_bootmode[BOOTMODE_SIZE];
+EXPORT_SYMBOL(system_bootmode);
+
+unsigned char system_postmode[BOOTMODE_SIZE];
+EXPORT_SYMBOL(system_postmode);
+
+unsigned int system_post;
+EXPORT_SYMBOL(system_post);
+
+unsigned char system_mac_addr[MAC_ADDR_SIZE];
+EXPORT_SYMBOL(system_mac_addr);
+
+unsigned char system_mac_sec[MAC_SEC_SIZE];
+EXPORT_SYMBOL(system_mac_sec);
+
+unsigned char system_btmac_addr[MAC_ADDR_SIZE];
+EXPORT_SYMBOL(system_btmac_addr);
+
+unsigned int ddr_mfgid;
+EXPORT_SYMBOL(ddr_mfgid);
+
+#ifdef CONFIG_FALCON
+unsigned char system_oldboot[BOOTMODE_SIZE];
+EXPORT_SYMBOL(system_oldboot);
+
+unsigned char system_qbcount[QBCOUNT_SIZE];
+EXPORT_SYMBOL(system_qbcount);
+#endif
+#endif
 
 
 #ifdef MULTI_CPU
@@ -660,6 +702,79 @@ static int __init parse_tag_revision(const struct tag *tag)
 
 __tagtable(ATAG_REVISION, parse_tag_revision);
 
+#if defined(CONFIG_LAB126)
+static int __init parse_tag_serial16(const struct tag *tag)
+{
+	memcpy(system_serial16, tag->u.id16.data, SERIAL16_SIZE);
+	return 0;
+}
+
+__tagtable(ATAG_SERIAL16, parse_tag_serial16);
+
+static int __init parse_tag_revision16(const struct tag *tag)
+{
+	memcpy(system_rev16, tag->u.id16.data, REVISION16_SIZE);
+	return 0;
+}
+
+__tagtable(ATAG_REVISION16, parse_tag_revision16);
+
+static int __init parse_tag_post(const struct tag *tag)
+{
+	system_post = tag->u.post.failure;
+	return 0;
+}
+
+__tagtable(ATAG_POST, parse_tag_post);
+
+static int __init parse_tag_mac(const struct tag *tag)
+{
+	memcpy(system_mac_addr, tag->u.macaddr.address, MAC_ADDR_SIZE);
+	memcpy(system_mac_sec, tag->u.macaddr.secret, MAC_SEC_SIZE);
+	return 0;
+}
+
+__tagtable(ATAG_MACADDR, parse_tag_mac);
+
+static int __init parse_tag_btmac(const struct tag *tag)
+{
+	memcpy(system_btmac_addr, tag->u.btmacaddr.address, MAC_ADDR_SIZE);
+	return 0;
+}
+
+__tagtable(ATAG_BTMACADDR, parse_tag_btmac);
+
+static int __init parse_tag_bootmode(const struct tag *tag)
+{
+	memcpy(system_bootmode, tag->u.bootmode.boot, BOOTMODE_SIZE);
+	memcpy(system_postmode, tag->u.bootmode.post, BOOTMODE_SIZE);
+#ifdef CONFIG_FALCON
+	memcpy(system_oldboot, tag->u.bootmode.oldboot, BOOTMODE_SIZE);
+#endif
+	return 0;
+}
+
+__tagtable(ATAG_BOOTMODE, parse_tag_bootmode);
+
+static int __init parse_tag_ddrmfgid(const struct tag *tag)
+{
+	ddr_mfgid = tag->u.ddrmfgid.mfgid;
+        return 0;
+}
+
+__tagtable(ATAG_DDRMFGID, parse_tag_ddrmfgid);
+
+#ifdef CONFIG_FALCON
+static int __init parse_tag_qboot(const struct tag *tag)
+{
+	memcpy(system_qbcount, tag->u.qboot.qbcount, QBCOUNT_SIZE);
+	return 0;
+}
+
+__tagtable(ATAG_QBOOT, parse_tag_qboot);
+#endif
+#endif
+
 static int __init parse_tag_cmdline(const struct tag *tag)
 {
 #if defined(CONFIG_CMDLINE_EXTEND)
@@ -1039,9 +1154,25 @@ static int c_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "Hardware\t: %s\n", machine_name);
 	seq_printf(m, "Revision\t: %04x\n", system_rev);
-	seq_printf(m, "Serial\t\t: %08x%08x\n",
-		   system_serial_high, system_serial_low);
 
+#if defined(CONFIG_LAB126)
+	if (system_serial16[0]) {
+		/* if 16-byte serial was initialized, print that. */
+		char serial_num[SERIAL16_SIZE + 1];
+
+		memset(serial_num, '\0', sizeof(serial_num));
+		strncpy(serial_num, system_serial16, SERIAL16_SIZE);
+		seq_printf(m, "Serial\t\t: \"%s\"\n", serial_num);
+	}
+	/* if 16-byte revision was initialized, print that. */
+	if (system_rev16[0]) {
+		char board_id[REVISION16_SIZE + 1];
+
+		memset(board_id, '\0', sizeof(board_id));
+		strncpy(board_id, system_rev16, REVISION16_SIZE);
+		seq_printf(m, "BoardId\t\t: \"%s\"\n", board_id);
+	}
+#endif
 	return 0;
 }
 

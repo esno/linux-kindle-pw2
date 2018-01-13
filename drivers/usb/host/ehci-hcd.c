@@ -42,12 +42,35 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
+#ifdef CONFIG_LAB126
+#include <linux/fsl_devices.h>
+#endif
+
 #include <asm/byteorder.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/system.h>
 #include <asm/unaligned.h>
+#include <mach/boardid.h>
 
+#ifdef CONFIG_LAB126
+static struct regulator *phyreg = NULL;
+#endif
+
+#ifdef CONFIG_FSL_USB_TEST_MODE
+static u32 single_step_desc_data_on;
+void set_single_step_desc_data_on(void)
+{
+	single_step_desc_data_on = 1;
+}
+EXPORT_SYMBOL_GPL(set_single_step_desc_data_on);
+
+void clear_single_step_desc_data_on(void)
+{
+	single_step_desc_data_on = 0;
+}
+EXPORT_SYMBOL_GPL(clear_single_step_desc_data_on);
+#endif
 /*-------------------------------------------------------------------------*/
 
 /*
@@ -237,9 +260,11 @@ static int handshake_on_error_set_halt(struct ehci_hcd *ehci, void __iomem *ptr,
 
 	error = handshake(ehci, ptr, mask, done, usec);
 	if (error) {
+#ifndef CONFIG_LAB126
 		ehci_halt(ehci);
 		ehci_to_hcd(ehci)->state = HC_STATE_HALT;
-		ehci_err(ehci, "force halt; handshake %p %08x %08x -> %d\n",
+#endif
+		ehci_err(ehci, "force halt (just kidding); handshake %p %08x %08x -> %d\n",
 			ptr, mask, done, error);
 	}
 
@@ -314,10 +339,14 @@ static void ehci_quiesce (struct ehci_hcd *ehci)
 	/* wait for any schedule enables/disables to take effect */
 	temp = ehci_readl(ehci, &ehci->regs->command) << 10;
 	temp &= STS_ASS | STS_PSS;
+#ifndef CONFIG_LAB126
 	if (handshake_on_error_set_halt(ehci, &ehci->regs->status,
 					STS_ASS | STS_PSS, temp, 16 * 125))
 		return;
-
+#else
+	handshake_on_error_set_halt(ehci, &ehci->regs->status,
+					STS_ASS | STS_PSS, temp, 32 * 125);
+#endif
 	/* then disable anything that's still active */
 	temp = ehci_readl(ehci, &ehci->regs->command);
 	temp &= ~(CMD_ASE | CMD_IAAD | CMD_PSE);
@@ -325,7 +354,7 @@ static void ehci_quiesce (struct ehci_hcd *ehci)
 
 	/* hardware can take 16 microframes to turn off ... */
 	handshake_on_error_set_halt(ehci, &ehci->regs->status,
-				    STS_ASS | STS_PSS, 0, 16 * 125);
+				    STS_ASS | STS_PSS, 0, 32 * 125);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -335,11 +364,167 @@ static void ehci_work(struct ehci_hcd *ehci);
 
 #include "ehci-hub.c"
 #include "ehci-lpm.c"
+#ifdef CONFIG_USB_STATIC_IRAM
+#include "ehci-mem-iram.c"
+#include "ehci-q-iram.c"
+#else
 #include "ehci-mem.c"
 #include "ehci-q.c"
+#endif
 #include "ehci-sched.c"
 
 /*-------------------------------------------------------------------------*/
+
+
+#ifdef CONFIG_LAB126
+
+#define PORT_WAKE_BITS	(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E)
+
+static int ehci_idle_bus_resume (struct usb_hcd *hcd)
+{
+	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+	u32			temp;
+	u32			power_okay;
+	int			i;
+	u8			resume_needed = 0;
+
+	if (time_before (jiffies, ehci->next_statechange))
+		mdelay(15);
+	if (!test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)) {
+		spin_unlock_irq(&ehci->lock);
+		return -ESHUTDOWN;
+	}
+
+	power_okay = ehci_readl(ehci, &ehci->regs->intr_enable);
+	ehci_writel(ehci, 0, &ehci->regs->intr_enable);
+	ehci_writel(ehci, 0, &ehci->regs->segment);
+	ehci_writel(ehci, ehci->periodic_dma, &ehci->regs->frame_list);
+	ehci_writel(ehci, (u32) ehci->async->qh_dma, &ehci->regs->async_next);
+
+	ehci_writel(ehci, ehci->command, &ehci->regs->command);
+
+	mdelay(8);
+
+	i = HCS_N_PORTS (ehci->hcs_params);
+	while (i--) {
+		temp = ehci_readl(ehci, &ehci->regs->port_status [i]);
+		temp &= ~(PORT_RWC_BITS | PORT_WAKE_BITS);
+		if (test_bit(i, &ehci->bus_suspended) &&
+			(temp & PORT_SUSPEND)) {
+			temp |= PORT_RESUME;
+			resume_needed = 1;
+		}
+		ehci_writel(ehci, temp, &ehci->regs->port_status [i]);
+	}
+
+	if (resume_needed) {
+		mdelay(100);
+	}
+
+	i = HCS_N_PORTS (ehci->hcs_params);
+	while (i--) {
+		temp = ehci_readl(ehci, &ehci->regs->port_status [i]);
+		if (test_bit(i, &ehci->bus_suspended) &&
+			(temp & PORT_SUSPEND)) {
+				temp &= ~(PORT_RWC_BITS | PORT_RESUME);
+				ehci_writel(ehci, temp, &ehci->regs->port_status [i]);
+		}
+	}
+
+	(void) ehci_readl(ehci, &ehci->regs->command);
+	temp = CMD_RUN;
+	if (ehci->async->qh_next.qh)
+		temp |= CMD_ASE;
+	if (ehci->periodic_sched)
+		temp |= CMD_PSE;
+	if (temp) {
+		ehci->command |= temp;
+		ehci_writel(ehci, ehci->command, &ehci->regs->command);
+	}
+
+	ehci->next_statechange = jiffies + msecs_to_jiffies(5);
+	hcd->state = HC_STATE_RUNNING;
+
+	ehci_writel(ehci, INTR_MASK, &ehci->regs->intr_enable);
+	ehci_handover_companion_ports(ehci);
+
+	mdelay(100);
+	return 0;
+}
+
+static int ehci_idle_bus_suspend_nonatomic (struct usb_hcd *hcd)
+{
+	struct ehci_hcd		*ehci = hcd_to_ehci (hcd);
+	int 			port;
+	int			mask;
+
+	if (time_before (jiffies, ehci->next_statechange))
+		msleep(5);
+
+	del_timer_sync(&ehci->watchdog);
+	del_timer_sync(&ehci->iaa_watchdog);
+
+	port = HCS_N_PORTS (ehci->hcs_params);
+	spin_lock_irq (&ehci->lock);
+
+	if (HC_IS_RUNNING(hcd->state)) {
+		ehci_quiesce (ehci);
+		hcd->state = HC_STATE_QUIESCING;
+	}
+
+	ehci->command = ehci_readl(ehci, &ehci->regs->command);
+	ehci_work(ehci);
+
+	ehci->bus_suspended = 0;
+	ehci->owned_ports = 0;
+
+	while (port--) {
+		u32 __iomem	*reg = &ehci->regs->port_status [port];
+		u32		t1 = ehci_readl(ehci, reg) & ~PORT_RWC_BITS;
+		u32		t2 = t1;
+
+		if (t1 & PORT_OWNER)
+			set_bit(port, &ehci->owned_ports);
+		else if ((t1 & PORT_PE) && !(t1 & PORT_SUSPEND)) {
+			t2 |= PORT_SUSPEND;
+			set_bit(port, &ehci->bus_suspended);
+		}
+
+		/* enable remote wakeup on all ports */
+		if (hcd->self.root_hub->do_remote_wakeup) {
+			if (t1 & PORT_CONNECT)
+				t2 |= PORT_WKOC_E|PORT_WKDISC_E;
+			else
+				t2 |= PORT_WKOC_E|PORT_WKCONN_E;
+		} else
+			t2 &= ~PORT_WAKE_BITS;
+
+		if (t1 != t2) {
+			ehci_writel(ehci, t2, reg);
+		}
+	}
+
+	if (ehci->bus_suspended)
+		udelay(150);
+
+	ehci_halt (ehci);
+	hcd->state = HC_STATE_SUSPENDED;
+
+	if (ehci->reclaim)
+		end_unlink_async(ehci);
+
+	mask = INTR_MASK;
+	if (!hcd->self.root_hub->do_remote_wakeup)
+		mask &= ~STS_PCD;
+	ehci_writel(ehci, mask, &ehci->regs->intr_enable);
+	ehci_readl(ehci, &ehci->regs->intr_enable);
+
+	ehci->next_statechange = jiffies + msecs_to_jiffies(10);
+	spin_unlock_irq (&ehci->lock);
+	return 0;
+}
+
+#endif /* CONFIG_LAB126 */
 
 static void ehci_iaa_watchdog(unsigned long param)
 {
@@ -347,6 +532,19 @@ static void ehci_iaa_watchdog(unsigned long param)
 	unsigned long		flags;
 
 	spin_lock_irqsave (&ehci->lock, flags);
+
+#ifdef CONFIG_LAB126
+	{
+		struct usb_hcd *hcd = ehci_to_hcd(ehci);
+		struct fsl_usb2_platform_data *pdata = hcd->self.controller->platform_data;
+
+		if (atomic_read(&pdata->idle_suspended) == 1) {
+			spin_unlock_irqrestore(&ehci->lock, flags);
+			return;
+		}
+	}
+#endif /* CONFIG_LAB126 */
+
 
 	/* Lost IAA irqs wedge things badly; seen first with a vt8235.
 	 * So we need this watchdog, but must protect it against both
@@ -395,6 +593,18 @@ static void ehci_watchdog(unsigned long param)
 	unsigned long		flags;
 
 	spin_lock_irqsave(&ehci->lock, flags);
+
+#ifdef CONFIG_LAB126
+	{
+		struct usb_hcd *hcd = ehci_to_hcd(ehci);
+		struct fsl_usb2_platform_data *pdata = hcd->self.controller->platform_data;
+
+		if (atomic_read(&pdata->idle_suspended) == 1) {
+			spin_unlock_irqrestore (&ehci->lock, flags);
+			return;
+		}
+	}
+#endif /* CONFIG_LAB126 */
 
 	/* stop async processing after it's idled a bit */
 	if (test_bit (TIMER_ASYNC_OFF, &ehci->actions))
@@ -959,8 +1169,22 @@ static int ehci_urb_enqueue (
 		/* FALLTHROUGH */
 	/* case PIPE_BULK: */
 	default:
-		if (!qh_urb_transaction (ehci, urb, &qtd_list, mem_flags))
+#ifdef CONFIG_FSL_USB_TEST_MODE
+		if (!single_step_desc_data_on) {
+			printk(KERN_DEBUG "in test mode, but single step NOT on\n");
+			if (!qh_urb_transaction(ehci, urb, &qtd_list,
+						mem_flags))
+				return -ENOMEM;
+		} else {
+			printk(KERN_DEBUG "in test mode, single step on\n");
+			if (!single_step_qh_urb_transaction(ehci, urb,
+				&qtd_list, mem_flags))
+				return -ENOMEM;
+		}
+#else
+		if (!qh_urb_transaction(ehci, urb, &qtd_list, mem_flags))
 			return -ENOMEM;
+#endif
 		return submit_async(ehci, urb, &qtd_list, mem_flags);
 
 	case PIPE_INTERRUPT:
@@ -1232,6 +1456,11 @@ MODULE_LICENSE ("GPL");
 #define        PLATFORM_DRIVER         ehci_hcd_omap_driver
 #endif
 
+#ifdef CONFIG_USB_EHCI_ARC
+#include "ehci-arc.c"
+#define	PLATFORM_DRIVER		ehci_fsl_driver
+#endif
+
 #ifdef CONFIG_PPC_PS3
 #include "ehci-ps3.c"
 #define	PS3_SYSTEM_BUS_DRIVER	ps3_ehci_driver
@@ -1350,6 +1579,23 @@ static int __init ehci_hcd_init(void)
 	}
 #endif
 
+#ifdef CONFIG_LAB126
+	if(LAB126_BOARD_HAS_WAN) {
+		phyreg = regulator_get(NULL, "WAN_USB_HOST_PHY");
+		if (IS_ERR(phyreg)) {
+			printk(KERN_ERR "Error cannot get WAN_USB_HOST_PHY regulator \n");
+			retval = EINVAL;
+			goto err_reg_get;
+		}
+
+		retval = regulator_enable(phyreg);
+		if (retval < 0) {
+			printk(KERN_ERR "Error failed to enable WAN_USB_HOST_PHY regulator \n");
+			goto err_reg_en;
+		}
+	}
+#endif
+
 #ifdef PLATFORM_DRIVER
 	retval = platform_driver_register(&PLATFORM_DRIVER);
 	if (retval < 0)
@@ -1401,6 +1647,12 @@ clean1:
 	platform_driver_unregister(&PLATFORM_DRIVER);
 clean0:
 #endif
+#ifdef CONFIG_LAB126
+	regulator_disable(phyreg);
+err_reg_en:
+	regulator_put(phyreg);
+err_reg_get:
+#endif
 #ifdef DEBUG
 	debugfs_remove(ehci_debug_root);
 	ehci_debug_root = NULL;
@@ -1432,6 +1684,12 @@ static void __exit ehci_hcd_cleanup(void)
 	debugfs_remove(ehci_debug_root);
 #endif
 	clear_bit(USB_EHCI_LOADED, &usb_hcds_loaded);
+#ifdef CONFIG_LAB126
+	if(LAB126_BOARD_HAS_WAN) {
+		regulator_disable(phyreg);
+		regulator_put(phyreg);
+	}
+#endif
 }
 module_exit(ehci_hcd_cleanup);
 

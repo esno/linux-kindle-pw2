@@ -327,6 +327,20 @@ config BACKLIGHT_PCF50633
 	  If you have a backlight driven by a NXP PCF50633 MFD, say Y here to
 	  enable its driver.
 
+config BACKLIGHT_DA9052
+	tristate "Dialog DA9052 WLED"
+	depends on PMIC_DIALOG
+	help
+	  Enable the DA9052 Backlight Driver
+
+config BACKLIGHT_MAX77696
+	bool "MAX77696 BACKLIGHT"
+	default y
+	depends on MFD_MAX77696 
+	help
+	  If you have a LCD backlight connected to the WLED output of MAX77696
+	  WLED output, say Y here to enable this driver.
+
 endif # BACKLIGHT_CLASS_DEVICE
 
 endif # BACKLIGHT_LCD_SUPPORT

@@ -70,7 +70,6 @@
 
 /*-------------------------------------------------------------------------*/
 
-
 #ifndef DEBUG
 #undef VERBOSE_DEBUG
 #undef DUMP_MSGS
@@ -309,8 +308,8 @@ enum fsg_state {
 	FSG_STATE_ABORT_BULK_OUT,
 	FSG_STATE_RESET,
 	FSG_STATE_INTERFACE_CHANGE,
-	FSG_STATE_CONFIG_CHANGE,
 	FSG_STATE_DISCONNECT,
+	FSG_STATE_CONFIG_CHANGE,
 	FSG_STATE_EXIT,
 	FSG_STATE_TERMINATED
 };
@@ -539,6 +538,19 @@ static int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	loff_t				num_sectors;
 	loff_t				min_sectors;
 
+#if defined(CONFIG_LAB126) && defined(DEBUG)
+
+	char *p="not open yet";
+	char buf[1024];
+	if(curlun->filp)
+		p = d_path(&curlun->filp->f_path, buf, PAGE_SIZE - 1);
+
+	LDBG(curlun,"%s:%d  %s: name %s filp 0x%x file_cout %ld\n", __FUNCTION__,__LINE__,  current->comm, 
+		 p, (int)curlun->filp, curlun->filp ? file_count(curlun->filp) : 0);
+	//dump_stack();
+
+#endif
+
 	/* R/W if we can, R/O if we must */
 	ro = curlun->initially_ro;
 	if (!ro) {
@@ -614,6 +626,18 @@ out:
 
 static void fsg_lun_close(struct fsg_lun *curlun)
 {
+#if defined(CONFIG_LAB126) && defined(DEBUG)
+	char *p="not open yet";
+	char buf[1024];
+	if(curlun->filp)
+		p = d_path(&curlun->filp->f_path, buf, PAGE_SIZE - 1);
+
+	LDBG(curlun,"%s [%d] %s: name %s filp 0x%x file_cout %ld\n", __FUNCTION__,__LINE__, 
+current->comm, 
+		 p ,  (int)curlun->filp, curlun->filp ? file_count(curlun->filp) : 0);
+	//dump_stack();
+#endif
+
 	if (curlun->filp) {
 		LDBG(curlun, "close backing file\n");
 		fput(curlun->filp);
@@ -630,11 +654,16 @@ static void fsg_lun_close(struct fsg_lun *curlun)
  */
 static int fsg_lun_fsync_sub(struct fsg_lun *curlun)
 {
-	struct file	*filp = curlun->filp;
+	int res = 0;
 
-	if (curlun->ro || !filp)
-		return 0;
-	return vfs_fsync(filp, 1);
+#if defined(CONFIG_LAB126) && defined(DEBUG)
+	//dump_stack();
+#endif
+	
+	if (!curlun->ro && curlun->filp)
+		res = vfs_fsync(curlun->filp, 1);
+
+	return res;														   
 }
 
 static void store_cdrom_address(u8 *dest, int msf, u32 addr)

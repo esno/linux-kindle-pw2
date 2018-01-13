@@ -96,7 +96,7 @@
  * Duplicated divider values removed from list
  */
 
-static u16 __initdata i2c_clk_div[50][2] = {
+static u16 i2c_clk_div[50][2] = {
 	{ 22,	0x20 }, { 24,	0x21 }, { 26,	0x22 }, { 28,	0x23 },
 	{ 30,	0x00 },	{ 32,	0x24 }, { 36,	0x25 }, { 40,	0x26 },
 	{ 42,	0x03 }, { 44,	0x27 },	{ 48,	0x28 }, { 52,	0x05 },
@@ -123,6 +123,7 @@ struct imx_i2c_struct {
 	unsigned int 		disable_delay;
 	int			stopped;
 	unsigned int		ifdr; /* IMX_I2C_IFDR */
+	unsigned int		cur_clk;
 };
 
 /** Functions for IMX I2C adapter driver ***************************************
@@ -141,7 +142,7 @@ static int i2c_imx_bus_busy(struct imx_i2c_struct *i2c_imx, int for_busy)
 			break;
 		if (!for_busy && !(temp & I2SR_IBB))
 			break;
-		if (signal_pending(current)) {
+		if (fatal_signal_pending(current)) {
 			dev_dbg(&i2c_imx->adapter.dev,
 				"<%s> I2C Interrupted\n", __func__);
 			return -EINTR;
@@ -181,12 +182,67 @@ static int i2c_imx_acked(struct imx_i2c_struct *i2c_imx)
 	return 0;
 }
 
+static void i2c_imx_set_clk(struct imx_i2c_struct *i2c_imx,
+							unsigned int rate)
+{
+	unsigned int i2c_clk_rate;
+	unsigned int div;
+	int i;
+
+	/* Divider value calculation */
+	i2c_clk_rate = clk_get_rate(i2c_imx->clk);
+	if (i2c_imx->cur_clk == i2c_clk_rate)
+		return;
+	else
+		i2c_imx->cur_clk = i2c_clk_rate;
+	div = (i2c_clk_rate + rate - 1) / rate;
+	if (div < i2c_clk_div[0][0])
+		i = 0;
+	else if (div > i2c_clk_div[ARRAY_SIZE(i2c_clk_div) - 1][0])
+		i = ARRAY_SIZE(i2c_clk_div) - 1;
+	else
+		for (i = 0; i2c_clk_div[i][0] < div; i++)
+			;
+
+	/* Store divider value */
+	i2c_imx->ifdr = i2c_clk_div[i][1];
+
+	/*
+	 * There dummy delay is calculated.
+	 * It should be about one I2C clock period long.
+	 * This delay is used in I2C bus disable function
+	 * to fix chip hardware bug.
+	 */
+	i2c_imx->disable_delay = (500000U * i2c_clk_div[i][0]
+		+ (i2c_clk_rate / 2) - 1) / (i2c_clk_rate / 2);
+
+	/* dev_dbg() can't be used, because adapter is not yet registered */
+#ifdef CONFIG_I2C_DEBUG_BUS
+	printk(KERN_DEBUG "I2C: <%s> I2C_CLK=%d, REQ DIV=%d\n",
+		__func__, i2c_clk_rate, div);
+	printk(KERN_DEBUG "I2C: <%s> IFDR[IC]=0x%x, REAL DIV=%d\n",
+		__func__, i2c_clk_div[i][1], i2c_clk_div[i][0]);
+#endif
+}
+
 static int i2c_imx_start(struct imx_i2c_struct *i2c_imx)
 {
 	unsigned int temp = 0;
+	struct imxi2c_platform_data *pdata;
 	int result;
 
 	dev_dbg(&i2c_imx->adapter.dev, "<%s>\n", __func__);
+
+	/* Currently on Arik/Rigel, the I2C clk is from IPG_PERCLK which is
+	 * sourced from IPG_CLK. In low bus freq mode, IPG_CLK is at 12MHz
+	 * and IPG_PERCLK is down to 4MHz.
+	 * Update I2C divider before set i2c clock.
+	 */
+	pdata = i2c_imx->adapter.dev.parent->platform_data;
+	if (pdata && pdata->bitrate)
+		i2c_imx_set_clk(i2c_imx, pdata->bitrate);
+	else
+		i2c_imx_set_clk(i2c_imx, IMX_I2C_BIT_RATE);
 
 	clk_enable(i2c_imx->clk);
 	writeb(i2c_imx->ifdr, i2c_imx->base + IMX_I2C_IFDR);
@@ -240,44 +296,6 @@ static void i2c_imx_stop(struct imx_i2c_struct *i2c_imx)
 	clk_disable(i2c_imx->clk);
 }
 
-static void __init i2c_imx_set_clk(struct imx_i2c_struct *i2c_imx,
-							unsigned int rate)
-{
-	unsigned int i2c_clk_rate;
-	unsigned int div;
-	int i;
-
-	/* Divider value calculation */
-	i2c_clk_rate = clk_get_rate(i2c_imx->clk);
-	div = (i2c_clk_rate + rate - 1) / rate;
-	if (div < i2c_clk_div[0][0])
-		i = 0;
-	else if (div > i2c_clk_div[ARRAY_SIZE(i2c_clk_div) - 1][0])
-		i = ARRAY_SIZE(i2c_clk_div) - 1;
-	else
-		for (i = 0; i2c_clk_div[i][0] < div; i++);
-
-	/* Store divider value */
-	i2c_imx->ifdr = i2c_clk_div[i][1];
-
-	/*
-	 * There dummy delay is calculated.
-	 * It should be about one I2C clock period long.
-	 * This delay is used in I2C bus disable function
-	 * to fix chip hardware bug.
-	 */
-	i2c_imx->disable_delay = (500000U * i2c_clk_div[i][0]
-		+ (i2c_clk_rate / 2) - 1) / (i2c_clk_rate / 2);
-
-	/* dev_dbg() can't be used, because adapter is not yet registered */
-#ifdef CONFIG_I2C_DEBUG_BUS
-	printk(KERN_DEBUG "I2C: <%s> I2C_CLK=%d, REQ DIV=%d\n",
-		__func__, i2c_clk_rate, div);
-	printk(KERN_DEBUG "I2C: <%s> IFDR[IC]=0x%x, REAL DIV=%d\n",
-		__func__, i2c_clk_div[i][1], i2c_clk_div[i][0]);
-#endif
-}
-
 static irqreturn_t i2c_imx_isr(int irq, void *dev_id)
 {
 	struct imx_i2c_struct *i2c_imx = dev_id;
@@ -302,7 +320,6 @@ static int i2c_imx_write(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 
 	dev_dbg(&i2c_imx->adapter.dev, "<%s> write slave address: addr=0x%x\n",
 		__func__, msgs->addr << 1);
-
 	/* write slave address */
 	writeb(msgs->addr << 1, i2c_imx->base + IMX_I2C_I2DR);
 	result = i2c_imx_trx_complete(i2c_imx);
@@ -311,6 +328,14 @@ static int i2c_imx_write(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 	result = i2c_imx_acked(i2c_imx);
 	if (result)
 		return result;
+
+	/*
+	 * iMX6SLRM_RevA. Section 30.4.3
+	 * When an interrupt occurs at the end of the address cycle, the master is always in transmit
+	 * mode; that is, the address is sent.
+	 * So there is no need to explicitly set I2CR_MTX here.
+	 */
+
 	dev_dbg(&i2c_imx->adapter.dev, "<%s> write data\n", __func__);
 
 	/* write data */
@@ -329,7 +354,7 @@ static int i2c_imx_write(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 	return 0;
 }
 
-static int i2c_imx_read(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
+static int i2c_imx_read(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs, int last)
 {
 	int i, result;
 	unsigned int temp;
@@ -337,6 +362,7 @@ static int i2c_imx_read(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 	dev_dbg(&i2c_imx->adapter.dev,
 		"<%s> write slave address: addr=0x%x\n",
 		__func__, (msgs->addr << 1) | 0x01);
+
 
 	/* write slave address */
 	writeb((msgs->addr << 1) | 0x01, i2c_imx->base + IMX_I2C_I2DR);
@@ -351,10 +377,16 @@ static int i2c_imx_read(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 
 	/* setup bus to read data */
 	temp = readb(i2c_imx->base + IMX_I2C_I2CR);
+
 	temp &= ~I2CR_MTX;
-	if (msgs->len - 1)
+
+	if (msgs->len == 1)
+		temp |= I2CR_TXAK;
+	else
 		temp &= ~I2CR_TXAK;
+
 	writeb(temp, i2c_imx->base + IMX_I2C_I2CR);
+
 	readb(i2c_imx->base + IMX_I2C_I2DR); /* dummy read */
 
 	dev_dbg(&i2c_imx->adapter.dev, "<%s> read data\n", __func__);
@@ -364,19 +396,30 @@ static int i2c_imx_read(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 		result = i2c_imx_trx_complete(i2c_imx);
 		if (result)
 			return result;
-		if (i == (msgs->len - 1)) {
+		if ((i == (msgs->len - 1))) {
 			/* It must generate STOP before read I2DR to prevent
 			   controller from generating another clock cycle */
-			dev_dbg(&i2c_imx->adapter.dev,
-				"<%s> clear MSTA\n", __func__);
-			temp = readb(i2c_imx->base + IMX_I2C_I2CR);
-			temp &= ~(I2CR_MSTA | I2CR_MTX);
-			writeb(temp, i2c_imx->base + IMX_I2C_I2CR);
-			i2c_imx_bus_busy(i2c_imx, 0);
-			i2c_imx->stopped = 1;
-		} else if (i == (msgs->len - 2)) {
-			dev_dbg(&i2c_imx->adapter.dev,
-				"<%s> set TXAK\n", __func__);
+			if (last) {
+				dev_dbg(&i2c_imx->adapter.dev, "<%s> sending stop condition\n", __func__);
+				temp = readb(i2c_imx->base + IMX_I2C_I2CR);
+				temp &= ~(I2CR_MSTA | I2CR_MTX);
+				writeb(temp, i2c_imx->base + IMX_I2C_I2CR);
+				i2c_imx_bus_busy(i2c_imx, 0);
+				i2c_imx->stopped = 1;
+			}
+			else {
+				/*
+				 * Set MTX to make sure we don't get an extra clock cycle
+				 * in a repeated start scenario
+				 */
+				temp = readb(i2c_imx->base + IMX_I2C_I2CR);
+				temp |= I2CR_MTX;
+				writeb(temp, i2c_imx->base + IMX_I2C_I2CR);
+			}
+		} else if ((i == (msgs->len - 2))) {
+			/*
+			 * Send a NACK on the last byte
+			 */
 			temp = readb(i2c_imx->base + IMX_I2C_I2CR);
 			temp |= I2CR_TXAK;
 			writeb(temp, i2c_imx->base + IMX_I2C_I2CR);
@@ -386,6 +429,7 @@ static int i2c_imx_read(struct imx_i2c_struct *i2c_imx, struct i2c_msg *msgs)
 			"<%s> read byte: B%d=0x%X\n",
 			__func__, i, msgs->buf[i]);
 	}
+
 	return 0;
 }
 
@@ -414,6 +458,12 @@ static int i2c_imx_xfer(struct i2c_adapter *adapter,
 			result =  i2c_imx_bus_busy(i2c_imx, 1);
 			if (result)
 				goto fail0;
+			/*
+			 * i.MX6SLRM_RevA. Section 30.5:
+			 * Software should take care that there is a delay of at least two Module Clock cycles after it
+			 * sets the I2C_I2CR[RSTA] bit before writing to the I2C_I2DR register.
+			 */
+			udelay(i2c_imx->disable_delay * 2);
 		}
 		dev_dbg(&i2c_imx->adapter.dev,
 			"<%s> transfer message: %d\n", __func__, i);
@@ -435,7 +485,7 @@ static int i2c_imx_xfer(struct i2c_adapter *adapter,
 			(temp & I2SR_RXAK ? 1 : 0));
 #endif
 		if (msgs[i].flags & I2C_M_RD)
-			result = i2c_imx_read(i2c_imx, &msgs[i]);
+			result = i2c_imx_read(i2c_imx, &msgs[i], (i + 1 == num));
 		else
 			result = i2c_imx_write(i2c_imx, &msgs[i]);
 		if (result)

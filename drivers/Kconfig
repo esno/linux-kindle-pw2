@@ -116,8 +116,6 @@ source "drivers/vlynq/Kconfig"
 
 source "drivers/xen/Kconfig"
 
-source "drivers/staging/Kconfig"
-
 source "drivers/platform/Kconfig"
 
 source "drivers/clk/Kconfig"
@@ -126,4 +124,7 @@ source "drivers/hwspinlock/Kconfig"
 
 source "drivers/clocksource/Kconfig"
 
+source "drivers/mxc/Kconfig"
+
+source "drivers/falcon/Kconfig"
 endmenu

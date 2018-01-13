@@ -1,6 +1,7 @@
 /*
  * Copyright 2005-2009 MontaVista Software, Inc.
  * Copyright 2008      Freescale Semiconductor, Inc.
+ * Copyright 2012-2015 Amazon.com, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -208,6 +209,7 @@ static void usb_hcd_fsl_remove(struct usb_hcd *hcd,
 		pdata->exit(pdev);
 	iounmap(hcd->regs);
 	release_mem_region(hcd->rsrc_start, hcd->rsrc_len);
+	otg_put_transceiver(ehci->transceiver);
 	usb_put_hcd(hcd);
 }
 

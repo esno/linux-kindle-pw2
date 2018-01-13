@@ -229,6 +229,7 @@ struct task_rss_stat {
 
 struct mm_rss_stat {
 	atomic_long_t count[NR_MM_COUNTERS];
+	unsigned int last_memlog;
 };
 
 struct mm_struct {

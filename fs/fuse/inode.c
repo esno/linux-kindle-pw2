@@ -888,6 +888,10 @@ static int fuse_bdi_init(struct fuse_conn *fc, struct super_block *sb)
 	/* fuse does it's own writeback accounting */
 	fc->bdi.capabilities = BDI_CAP_NO_ACCT_WB;
 
+#ifdef CONFIG_LAB126
+	fc->bdi.capabilities |= BDI_CAP_FLAG_DONTNEED;
+#endif
+
 	err = bdi_init(&fc->bdi);
 	if (err)
 		return err;

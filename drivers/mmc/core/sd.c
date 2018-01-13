@@ -306,6 +306,9 @@ static int mmc_read_switch(struct mmc_card *card)
 		goto out;
 	}
 
+	if (status[13] & 0x02)
+		card->sw_caps.hs_max_dtr = 50000000;
+
 	if (card->scr.sda_spec3) {
 		card->sw_caps.sd3_bus_mode = status[13];
 
@@ -348,9 +351,6 @@ static int mmc_read_switch(struct mmc_card *card)
 		}
 
 		card->sw_caps.sd3_curr_limit = status[7];
-	} else {
-		if (status[13] & 0x02)
-			card->sw_caps.hs_max_dtr = 50000000;
 	}
 
 out:
@@ -613,13 +613,13 @@ static int mmc_sd_init_uhs_card(struct mmc_card *card)
 	if (err)
 		goto out;
 
-	/* Set bus speed mode of the card */
-	err = sd_set_bus_speed_mode(card, status);
+	/* Set current limit for the card */
+	err = sd_set_current_limit(card, status);
 	if (err)
 		goto out;
 
-	/* Set current limit for the card */
-	err = sd_set_current_limit(card, status);
+	/* Set bus speed mode of the card */
+	err = sd_set_bus_speed_mode(card, status);
 	if (err)
 		goto out;
 
@@ -707,8 +707,9 @@ int mmc_sd_get_cid(struct mmc_host *host, u32 ocr, u32 *cid, u32 *rocr)
 	 * If the host supports one of UHS-I modes, request the card
 	 * to switch to 1.8V signaling level.
 	 */
-	if (host->caps & (MMC_CAP_UHS_SDR12 | MMC_CAP_UHS_SDR25 |
+	if ((host->caps & (MMC_CAP_UHS_SDR12 | MMC_CAP_UHS_SDR25 |
 	    MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_DDR50))
+			&& (host->ocr_avail_sd & MMC_VDD_165_195))
 		ocr |= SD_OCR_S18R;
 
 	/* If the host can supply more than 150mA, XPC should be set to 1. */

@@ -167,6 +167,29 @@ config BATTERY_MAX17042
 	  multi-function devices that include fuel gauages that are compatible
 	  with MAX17042.
 
+config BATTERY_MAX77696
+	bool "MAX77696 GAUGE"
+	default n
+	depends on MFD_MAX77696
+	help
+	  MAX77696 is fuel-gauge systems for lithium-ion (Li+) batteries
+	  in handheld and portable equipment.
+
+config CHARGER_MAX77696
+	bool "MAX77696 CHARGER"
+	default n
+	depends on MFD_MAX77696
+	help
+	  Say Y here to enable support for the battery charger in
+	  MAX77696 PMIC.
+
+config POWER_SODA
+	bool "SODA CHARGER & BATTERY"
+	default n
+	depends on MACH_MX6SL_WARIO && MX6SL_WARIO_WOODY
+	help
+	  Say Y here to enable support for the soda charger.
+
 config BATTERY_Z2
 	tristate "Z2 battery driver"
 	depends on I2C && MACH_ZIPIT2
@@ -219,6 +242,14 @@ config CHARGER_MAX8903
 	  pins based on the status of charger connections with interrupt
 	  handlers.
 
+config SABRESD_MAX8903
+        tristate "Sabresd Board Battery DC-DC Charger for USB and Adapter Power"
+        depends on GENERIC_HARDIRQS
+        help
+          Say Y to enable support for the MAX8903 DC-DC charger and sysfs on
+	  sabresd board.The driver supports controlling charger and battery
+	  based on the status of charger connections with interrupt handlers.
+
 config CHARGER_TWL4030
 	tristate "OMAP TWL4030 BCI charger driver"
 	depends on TWL4030_CORE
@@ -234,5 +265,12 @@ config CHARGER_GPIO
 
 	  This driver can be build as a module. If so, the module will be
 	  called gpio-charger.
+
+config BATTERY_DA9052
+	tristate "Dialog DA9052 Battery"
+	depends on PMIC_DIALOG
+	help
+	  Say Y here to enable support for batteries charger integrated into
+	  DA9052 PMIC.
 
 endif # POWER_SUPPLY

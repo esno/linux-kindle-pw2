@@ -40,6 +40,10 @@ void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
 		sb->s_flags |= MS_RDONLY;
 		printk(KERN_ERR "FAT-fs (%s): Filesystem has been "
 				"set read-only\n", sb->s_id);
+		
+#ifdef CONFIG_LAB126
+		fat_error_notify();
+#endif
 	}
 }
 EXPORT_SYMBOL_GPL(__fat_fs_error);

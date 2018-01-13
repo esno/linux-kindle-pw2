@@ -47,7 +47,9 @@ obj-$(CONFIG_RT2X00)	+= rt2x00/
 
 obj-$(CONFIG_P54_COMMON)	+= p54/
 
+ifneq ($(CONFIG_LAB126),y)
 obj-$(CONFIG_ATH_COMMON)	+= ath/
+endif
 
 obj-$(CONFIG_MAC80211_HWSIM)	+= mac80211_hwsim.o
 
@@ -58,3 +60,4 @@ obj-$(CONFIG_WL12XX_PLATFORM_DATA)	+= wl12xx/
 obj-$(CONFIG_IWM)	+= iwmc3200wifi/
 
 obj-$(CONFIG_MWIFIEX)	+= mwifiex/
+obj-$(CONFIG_AR6003)      += ar6003/

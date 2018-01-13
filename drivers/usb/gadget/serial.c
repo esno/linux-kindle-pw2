@@ -137,7 +137,7 @@ MODULE_PARM_DESC(n_ports, "number of ports to create, default=1");
 
 /*-------------------------------------------------------------------------*/
 
-static int __init serial_bind_config(struct usb_configuration *c)
+static int __ref serial_bind_config(struct usb_configuration *c)
 {
 	unsigned i;
 	int status = 0;
@@ -160,7 +160,7 @@ static struct usb_configuration serial_config_driver = {
 	.bmAttributes	= USB_CONFIG_ATT_SELFPOWER,
 };
 
-static int __init gs_bind(struct usb_composite_dev *cdev)
+static int __ref gs_bind(struct usb_composite_dev *cdev)
 {
 	int			gcnum;
 	struct usb_gadget	*gadget = cdev->gadget;
@@ -255,6 +255,15 @@ static int __init init(void)
 		device_desc.bDeviceClass = USB_CLASS_COMM;
 		device_desc.idProduct =
 				cpu_to_le16(GS_CDC_PRODUCT_ID);
+#ifdef CONFIG_MX6SL_WARIO_WOODY
+		if (n_ports > 1) {
+			device_desc.bDeviceClass = USB_CLASS_MISC;
+			device_desc.bDeviceSubClass = 0x02;
+			device_desc.bDeviceProtocol = 0x01;
+			device_desc.idProduct =
+				cpu_to_le16(0xa5a7);
+		}
+#endif /* CONFIG_MX6SL_WARIO_WOODY */
 	} else if (use_obex) {
 		serial_config_driver.label = "CDC OBEX config";
 		serial_config_driver.bConfigurationValue = 3;

@@ -45,6 +45,9 @@ unsigned long __stack_chk_guard __read_mostly;
 EXPORT_SYMBOL(__stack_chk_guard);
 #endif
 
+//Allow for board specific behavior before the generic arm reset routine disables interrupts.
+void (*pm_restart)(char mode, const char *cmd) = NULL;
+
 static const char *processor_modes[] = {
   "USER_26", "FIQ_26" , "IRQ_26" , "SVC_26" , "UK4_26" , "UK5_26" , "UK6_26" , "UK7_26" ,
   "UK8_26" , "UK9_26" , "UK10_26", "UK11_26", "UK12_26", "UK13_26", "UK14_26", "UK15_26",
@@ -93,6 +96,11 @@ __setup("hlt", hlt_setup);
 
 void arm_machine_restart(char mode, const char *cmd)
 {
+
+	if(pm_restart) {
+		pm_restart(mode,cmd);
+	}
+
 	/* Disable interrupts first */
 	local_irq_disable();
 	local_fiq_disable();
@@ -132,6 +140,9 @@ void arm_machine_restart(char mode, const char *cmd)
  */
 void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
+
+void (*pm_power_hibernate)(void);
+EXPORT_SYMBOL(pm_power_hibernate);
 
 void (*arm_pm_restart)(char str, const char *cmd) = arm_machine_restart;
 EXPORT_SYMBOL_GPL(arm_pm_restart);
@@ -182,6 +193,7 @@ void cpu_idle(void)
 
 	/* endless idle loop with no priority at all */
 	while (1) {
+		idle_notifier_call_chain(IDLE_START);
 		tick_nohz_stop_sched_tick(1);
 		leds_event(led_idle_start);
 		while (!need_resched()) {
@@ -194,7 +206,7 @@ void cpu_idle(void)
 #ifdef CONFIG_PL310_ERRATA_769419
 			wmb();
 #endif
-			if (hlt_counter) {
+			if (hlt_counter || tick_check_broadcast_pending()) {
 				local_irq_enable();
 				cpu_relax();
 			} else {
@@ -212,6 +224,7 @@ void cpu_idle(void)
 		}
 		leds_event(led_idle_end);
 		tick_nohz_restart_sched_tick();
+		idle_notifier_call_chain(IDLE_END);
 		preempt_enable_no_resched();
 		schedule();
 		preempt_disable();
@@ -237,12 +250,23 @@ void machine_shutdown(void)
 
 void machine_halt(void)
 {
+#if 0
+	machine_power_off();
+#else 
+	/* TODO: 
+	 *		halt modified to support PMIC Full Shutdown (FSHDN instead of FSENT) for hibernate evaluation & HW diagnostics
+	 * 		to be reverted once we got hibernate scripts 
+	 */
+	printk(KERN_CRIT "halt - pmic FSHDN\n");
 	machine_shutdown();
-	while (1);
+	if (pm_power_hibernate)
+		pm_power_hibernate();
+#endif
 }
 
 void machine_power_off(void)
 {
+	printk(KERN_CRIT "poweroff - pmic FSENT\n");
 	machine_shutdown();
 	if (pm_power_off)
 		pm_power_off();

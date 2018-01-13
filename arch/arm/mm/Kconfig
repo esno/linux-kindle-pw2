@@ -821,7 +821,7 @@ config CACHE_L2X0
 	depends on REALVIEW_EB_ARM11MP || MACH_REALVIEW_PB11MP || MACH_REALVIEW_PB1176 || \
 		   REALVIEW_EB_A9MP || SOC_IMX35 || SOC_IMX31 || MACH_REALVIEW_PBX || \
 		   ARCH_NOMADIK || ARCH_OMAP4 || ARCH_EXYNOS4 || ARCH_TEGRA || \
-		   ARCH_U8500 || ARCH_VEXPRESS_CA9X4 || ARCH_SHMOBILE
+		   ARCH_U8500 || ARCH_VEXPRESS_CA9X4 || ARCH_SHMOBILE || SOC_IMX6Q
 	default y
 	select OUTER_CACHE
 	select OUTER_CACHE_SYNC
@@ -889,3 +889,57 @@ config ARCH_HAS_BARRIERS
 	help
 	  This option allows the use of custom mandatory barriers
 	  included via the mach/barriers.h file.
+
+config FALCON
+	bool "Falcon"
+	default y
+
+config FALCON_BIOS_ADDR
+	depends on FALCON
+	hex "Falcon BIOS virtual address"
+	default 0x00000000
+
+config FALCON_BIOS_SIZE
+	depends on FALCON
+	hex "Falcon BIOS size"
+	default 0x00010000
+
+config FALCON_STORAGE_BIOS_ADDR
+	depends on FALCON
+	hex "Storage BIOS virtual address"
+	default 0x00000000
+
+config FALCON_STORAGE_BIOS_SIZE
+	depends on FALCON
+	hex "Storage BIOS size"
+	default 0x00010000
+
+config FALCON_BIOS_WORK_SIZE
+	depends on FALCON
+	hex "BIOS work size"
+	default 0x00000000
+
+config FALCON_PSEUDO_NMI
+	depends on FALCON
+	bool "Use Pseudo NMI handler"
+	default n
+
+config FALCON_PSEUDO_NMI_VECTOR_HOOK
+	depends on FALCON_PSEUDO_NMI
+	bool "Hook IRQ vector and call Pseudo NMI handler directly"
+	default n
+
+config FALCON_PSEUDO_NMI_HANDLER_ADDR
+	depends on FALCON_PSEUDO_NMI
+	hex "Pseudo NMI handler virtual address"
+	default 0x00000000
+
+config FALCON_PSEUDO_NMI_HANDLER_SIZE
+	depends on FALCON_PSEUDO_NMI
+	hex "Pseudo NMI handler size"
+	default 0x00000000
+
+config FALCON_PSEUDO_NMI_IRQ
+	depends on FALCON_PSEUDO_NMI 
+	int "Setting IRQ for Pseudo NMI"
+	default 0

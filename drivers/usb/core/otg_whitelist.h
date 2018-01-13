@@ -16,11 +16,19 @@
  * YOU _SHOULD_ CHANGE THIS LIST TO MATCH YOUR PRODUCT AND ITS TESTING!
  */
 
+#include <linux/usb/audio.h>
+
 static struct usb_device_id whitelist_table [] = {
 
 /* hubs are optional in OTG, but very handy ... */
 { USB_DEVICE_INFO(USB_CLASS_HUB, 0, 0), },
 { USB_DEVICE_INFO(USB_CLASS_HUB, 0, 1), },
+
+
+/* from sound/usb/card.c - wee will take any audio device they will take. */
+{ .match_flags = (USB_DEVICE_ID_MATCH_INT_CLASS | USB_DEVICE_ID_MATCH_INT_SUBCLASS),
+.bInterfaceClass = USB_CLASS_AUDIO,
+.bInterfaceSubClass = USB_SUBCLASS_AUDIOCONTROL },
 
 #ifdef	CONFIG_USB_PRINTER		/* ignoring nonstatic linkage! */
 /* FIXME actually, printers are NOT supposed to use device classes;

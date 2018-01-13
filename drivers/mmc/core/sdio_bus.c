@@ -22,6 +22,7 @@
 
 #include "sdio_cis.h"
 #include "sdio_bus.h"
+#include "core.h"
 
 /* show configuration fields */
 #define sdio_config_attr(field, format_string)				\

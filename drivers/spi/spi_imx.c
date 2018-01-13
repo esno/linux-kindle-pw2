@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2007 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2004-2007, 2012 Freescale Semiconductor, Inc. All Rights Reserved.
  * Copyright (C) 2008 Juergen Beisert
  *
  * This program is free software; you can redistribute it and/or
@@ -44,6 +44,7 @@
 #define MXC_CSPICTRL		0x08
 #define MXC_CSPIINT		0x0c
 #define MXC_RESET		0x1c
+#define MXC_CSPITEST		0x20
 
 #define MX3_CSPISTAT		0x14
 #define MX3_CSPISTAT_RR		(1 << 3)
@@ -192,6 +193,8 @@ static unsigned int spi_imx_clkdiv_2(unsigned int fin,
 
 #define SPI_IMX2_3_STAT		0x18
 #define SPI_IMX2_3_STAT_RR		(1 <<  3)
+#define SPI_IMX2_3_STAT_RO		(1 <<  6)
+#define SPI_IMX2_3_STAT_TC		(1 <<  7)
 
 /* MX51 eCSPI */
 static unsigned int spi_imx2_3_clkdiv(unsigned int fin, unsigned int fspi)
@@ -283,6 +286,10 @@ static int __maybe_unused spi_imx2_3_config(struct spi_imx_data *spi_imx,
 
 	writel(ctrl, spi_imx->base + SPI_IMX2_3_CTRL);
 	writel(cfg, spi_imx->base + SPI_IMX2_3_CONFIG);
+
+	/* Make sure the TC bit has been cleared */
+	writel((SPI_IMX2_3_STAT_RO | SPI_IMX2_3_STAT_TC), 
+		     spi_imx->base + SPI_IMX2_3_STAT);
 
 	return 0;
 }
@@ -592,6 +599,20 @@ static struct spi_imx_devtype_data spi_imx_devtype_data[] __devinitdata = {
 #endif
 };
 
+#ifdef DEBUG
+static void spi_imx_dump_regs(struct spi_imx_data *data) {
+
+    printk("SPI regs: (base=0x%x)\n", (u32) data->base);
+    printk("CONREG: 0x%x (0x%x)\n", __raw_readl(data->base + SPI_IMX2_3_CTRL), (u32) (data->base + SPI_IMX2_3_CTRL));
+    printk("CFGREG: 0x%x (0x%x)\n", __raw_readl(data->base + SPI_IMX2_3_CONFIG), (u32) (data->base + SPI_IMX2_3_CONFIG));
+    printk("INTREG: 0x%x (0x%x)\n", __raw_readl(data->base + SPI_IMX2_3_INT), (u32) (data->base + SPI_IMX2_3_INT));
+    printk("STATREG: 0x%x (0x%x)\n", __raw_readl(data->base + SPI_IMX2_3_STAT), (u32) (data->base + SPI_IMX2_3_STAT));
+    printk("TESTREG: 0x%x (0x%x)\n", __raw_readl(data->base + MXC_CSPITEST), (u32) (data->base + MXC_CSPITEST));
+    printk("\n");
+	   
+}
+#endif
+
 static void spi_imx_chipselect(struct spi_device *spi, int is_active)
 {
 	struct spi_imx_data *spi_imx = spi_master_get_devdata(spi->master);
@@ -652,6 +673,7 @@ static int spi_imx_setupxfer(struct spi_device *spi,
 	struct spi_imx_data *spi_imx = spi_master_get_devdata(spi->master);
 	struct spi_imx_config config;
 
+	clk_enable(spi_imx->clk);
 	config.bpw = t ? t->bits_per_word : spi->bits_per_word;
 	config.speed_hz  = t ? t->speed_hz : spi->max_speed_hz;
 	config.mode = spi->mode;
@@ -671,14 +693,14 @@ static int spi_imx_setupxfer(struct spi_device *spi,
 	} else if (config.bpw <= 16) {
 		spi_imx->rx = spi_imx_buf_rx_u16;
 		spi_imx->tx = spi_imx_buf_tx_u16;
-	} else if (config.bpw <= 32) {
+	} else {
+		/* Use 32 bit functions for bpw greater than 16 */
 		spi_imx->rx = spi_imx_buf_rx_u32;
 		spi_imx->tx = spi_imx_buf_tx_u32;
-	} else
-		BUG();
+	} 
 
 	spi_imx->devtype_data.config(spi_imx, &config);
-
+	clk_disable(spi_imx->clk);
 	return 0;
 }
 
@@ -687,6 +709,7 @@ static int spi_imx_transfer(struct spi_device *spi,
 {
 	struct spi_imx_data *spi_imx = spi_master_get_devdata(spi->master);
 
+	clk_enable(spi_imx->clk);
 	spi_imx->tx_buf = transfer->tx_buf;
 	spi_imx->rx_buf = transfer->rx_buf;
 	spi_imx->count = transfer->len;
@@ -699,6 +722,7 @@ static int spi_imx_transfer(struct spi_device *spi,
 	spi_imx->devtype_data.intctrl(spi_imx, MXC_INT_TE);
 
 	wait_for_completion(&spi_imx->xfer_done);
+	clk_disable(spi_imx->clk);
 
 	return transfer->len;
 }
@@ -743,6 +767,9 @@ static struct platform_device_id spi_imx_devtype[] = {
 		.name = "imx35-cspi",
 		.driver_data = SPI_IMX_VER_0_7,
 	}, {
+		.name = "imx50-cspi",
+		.driver_data = SPI_IMX_VER_0_7,
+	}, {
 		.name = "imx51-cspi",
 		.driver_data = SPI_IMX_VER_0_7,
 	}, {
@@ -753,6 +780,9 @@ static struct platform_device_id spi_imx_devtype[] = {
 		.driver_data = SPI_IMX_VER_0_7,
 	}, {
 		.name = "imx53-ecspi",
+		.driver_data = SPI_IMX_VER_2_3,
+	}, {
+		.name = "imx6q-ecspi",
 		.driver_data = SPI_IMX_VER_2_3,
 	}, {
 		/* sentinel */
@@ -857,12 +887,12 @@ static int __devinit spi_imx_probe(struct platform_device *pdev)
 	spi_imx->devtype_data.reset(spi_imx);
 
 	spi_imx->devtype_data.intctrl(spi_imx, 0);
-
 	ret = spi_bitbang_start(&spi_imx->bitbang);
 	if (ret) {
 		dev_err(&pdev->dev, "bitbang start failed with %d\n", ret);
 		goto out_clk_put;
 	}
+	clk_disable(spi_imx->clk);
 
 	dev_info(&pdev->dev, "probed\n");
 
@@ -896,7 +926,7 @@ static int __devexit spi_imx_remove(struct platform_device *pdev)
 	int i;
 
 	spi_bitbang_stop(&spi_imx->bitbang);
-
+	clk_enable(spi_imx->clk);
 	writel(0, spi_imx->base + MXC_CSPICTRL);
 	clk_disable(spi_imx->clk);
 	clk_put(spi_imx->clk);
@@ -936,7 +966,7 @@ static void __exit spi_imx_exit(void)
 	platform_driver_unregister(&spi_imx_driver);
 }
 
-module_init(spi_imx_init);
+subsys_initcall(spi_imx_init);
 module_exit(spi_imx_exit);
 
 MODULE_DESCRIPTION("SPI Master Controller driver");

@@ -9,6 +9,10 @@
 #include <linux/ratelimit.h>
 #include <linux/msdos_fs.h>
 
+#ifdef CONFIG_LAB126
+int fat_error_notify(void);
+#endif
+
 /*
  * vfat shortname flags
  */

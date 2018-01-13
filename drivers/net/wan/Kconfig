@@ -501,4 +501,12 @@ config SBNI_MULTILINE
 
 	  If unsure, say N.
 
+config WARIO_WAN
+	tristate "WARIO WAN module support"
+	depends on MACH_MX6SL_WARIO
+
+config WARIO_WOODY_WAN
+	tristate "WARIO_WOODY WAN module support"
+	depends on MX6SL_WARIO_WOODY
+
 endif # WAN

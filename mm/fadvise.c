@@ -116,6 +116,10 @@ SYSCALL_DEFINE(fadvise64_64)(int fd, loff_t offset, loff_t len, int advice)
 	case POSIX_FADV_NOREUSE:
 		break;
 	case POSIX_FADV_DONTNEED:
+		if (bdi->capabilities & BDI_CAP_FLAG_DONTNEED) {
+			file->f_flags |= O_ADVNONEED;
+		}
+
 		if (!bdi_write_congested(mapping->backing_dev_info))
 			filemap_flush(mapping);
 

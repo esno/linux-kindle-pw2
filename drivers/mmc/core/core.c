@@ -23,6 +23,8 @@
 #include <linux/log2.h>
 #include <linux/regulator/consumer.h>
 #include <linux/pm_runtime.h>
+#include <linux/slab.h>
+#include <linux/errno.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
@@ -48,6 +50,9 @@ static struct workqueue_struct *workqueue;
 int use_spi_crc = 1;
 module_param(use_spi_crc, bool, 0);
 
+#define prl_debug(host, fmt, ...)                        \
+        mmc_print_to_fifo(host, pr_fmt(fmt), ##__VA_ARGS__)
+
 /*
  * We normally treat cards as removed during suspend if they are not
  * known to be on a non-removable bus, to avoid the risk of writing
@@ -64,6 +69,168 @@ module_param_named(removable, mmc_assume_removable, bool, 0644);
 MODULE_PARM_DESC(
 	removable,
 	"MMC/SD cards are removable and may be removed during suspend");
+
+#define TRUE 1
+#define FALSE 0
+
+/*
+ * This code extends the circular buffer described in Documentation/circular_buffers.txt.
+ * Note: Producers write to head, Consumers read from tail.
+ * In this code, producers can overwrite last entry at tail even if queue was full.
+ * So producers will move head and, if queue was full, tail as well.
+ *
+ * Producers and Consumers operate in chunk sizes. So head and tail indexes are
+ * values between 0 and (MMC_PRINT_FIFO_SIZE - 1). We compute actual buffer
+ * address directly.
+ */
+/*
+ * Chunk size should be a power of 2 for faster compute.
+ * FIFO size is the number of chunks in circular buffer.
+ */
+#define MMC_PRINT_CHUNK_SIZE (64)
+#define MMC_PRINT_FIFO_SIZE  (16)
+
+/*
+ * Initialize the print mechanism.
+ */
+int mmc_print_init(struct mmc_host *host)
+{
+	uint32_t fifo_size;
+        struct circ_buf *mmc_print_bufp;
+
+        if (host->mmc_print_initialized)
+            return EOK;
+
+	mmc_print_bufp = &host->mmc_print_buf;
+	fifo_size = MMC_PRINT_FIFO_SIZE * MMC_PRINT_CHUNK_SIZE;
+	mmc_print_bufp->buf = kmalloc(fifo_size, GFP_KERNEL);
+	if (!mmc_print_bufp->buf) {
+		printk(KERN_ERR "%s: Cannot allocate %u bytes\n",
+		       __FUNCTION__, fifo_size);
+		return ENOMEM;
+	}
+	spin_lock_init(&host->mmc_print_lock);
+	spin_lock_init(&host->mmc_dump_lock);
+	mmc_print_bufp->head = 0;
+	mmc_print_bufp->tail = 0;
+	host->mmc_print_initialized = TRUE;
+
+	return EOK;
+}
+
+/*
+ * Destroy the print mechanism.
+ */
+void mmc_print_destroy(struct mmc_host *host)
+{
+        struct circ_buf *mmc_print_bufp;
+
+	mmc_print_bufp = &host->mmc_print_buf;
+
+	if (!host->mmc_print_initialized)
+		return;
+	host->mmc_print_initialized = FALSE;
+	smp_wmb();
+	kfree(mmc_print_bufp->buf);
+	mmc_print_bufp->buf = NULL;
+}
+
+/*
+ * Print to the circular FIFO.
+ */
+int mmc_print_to_fifo(struct mmc_host *host, const char *fmt, ...)
+{
+	va_list args;
+	char *bufp;
+	unsigned int buflen = MMC_PRINT_CHUNK_SIZE;
+	unsigned long head;
+	unsigned long tail;
+	unsigned long flags;
+#if defined(CONFIG_PRINTK_TIME)
+	unsigned tlen;
+	unsigned long long t;
+	unsigned long nanosec_rem;
+#endif /* CONFIG_PRINTK_TIME */
+        struct circ_buf *mmc_print_bufp;
+
+	mmc_print_bufp = &host->mmc_print_buf;
+
+	if (!host->mmc_print_initialized)
+		return EPERM;
+
+	spin_lock_irqsave(&host->mmc_print_lock, flags);
+
+	head = mmc_print_bufp->head;
+	tail = ACCESS_ONCE(mmc_print_bufp->tail);
+
+	bufp = mmc_print_bufp->buf + (head * MMC_PRINT_CHUNK_SIZE);
+
+#if defined(CONFIG_PRINTK_TIME)
+	t = cpu_clock(smp_processor_id());
+	nanosec_rem = do_div(t, 1000000000);
+	tlen = sprintf(bufp, "[%5lu.%06lu] ",
+		       (unsigned long) t,
+		       nanosec_rem / 1000);
+	bufp += tlen;
+	buflen -= tlen;
+#endif /* CONFIG_PRINTK_TIME */
+
+	va_start(args,fmt);
+	vsnprintf(bufp, buflen, fmt, args);
+	va_end(args);
+
+	smp_wmb(); /* commit the item before incrementing the head */
+
+	mmc_print_bufp->head = (head + 1) & (MMC_PRINT_FIFO_SIZE - 1);
+
+	/*
+	 * If fifo was full, advance tail as well. Otherwise, it would
+	 * appear that fifo is empty.
+	 */
+	if (CIRC_SPACE(head, tail, MMC_PRINT_FIFO_SIZE) < 1) {
+		mmc_print_bufp->tail = (tail + 1) & (MMC_PRINT_FIFO_SIZE - 1);
+	}
+
+	spin_unlock_irqrestore(&host->mmc_print_lock, flags);
+	return EOK;
+}
+
+/*
+ * Print chunks from circular FIFO to kernel log buffer.
+ *
+ */
+int mmc_dump_from_fifo(struct mmc_host *host)
+{
+	char *bufp;
+ 	unsigned long head;
+	unsigned long tail;
+	unsigned long flags;
+        struct circ_buf *mmc_print_bufp;
+
+	mmc_print_bufp = &host->mmc_print_buf;
+
+	if (!host->mmc_print_initialized)
+		return EPERM;
+
+	spin_lock_irqsave(&host->mmc_dump_lock, flags);
+
+	head = ACCESS_ONCE(mmc_print_bufp->head);
+	tail = mmc_print_bufp->tail;
+
+	if (CIRC_CNT(head, tail, MMC_PRINT_FIFO_SIZE) < 1) {
+		spin_unlock_irqrestore(&host->mmc_dump_lock, flags);
+		return ENOENT;
+	}
+
+	bufp = mmc_print_bufp->buf + (tail * MMC_PRINT_CHUNK_SIZE);
+
+	printk(KERN_DEBUG "%s", bufp);
+
+	mmc_print_bufp->tail = (tail + 1) & (MMC_PRINT_FIFO_SIZE - 1);
+
+	spin_unlock_irqrestore(&host->mmc_dump_lock, flags);
+	return EOK;
+}
 
 /*
  * Internal function. Schedule delayed work in the MMC work queue.
@@ -101,12 +268,12 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 	}
 
 	if (err && cmd->retries) {
-		pr_debug("%s: req failed (CMD%u): %d, retrying...\n",
-			mmc_hostname(host), cmd->opcode, err);
-
-		cmd->retries--;
-		cmd->error = 0;
-		host->ops->request(host, mrq);
+		/*
+		 * Request starter must handle retries - see
+		 * mmc_wait_for_req_done().
+		 */
+		if (mrq->done)
+			mrq->done(mrq);
 	} else {
 		led_trigger_event(host->led, LED_OFF);
 
@@ -146,7 +313,7 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 	struct scatterlist *sg;
 #endif
 
-	pr_debug("%s: starting CMD%u arg %08x flags %08x\n",
+	prl_debug(host, "%s: starting CMD%u arg %08x flags %08x\n",
 		 mmc_hostname(host), mrq->cmd->opcode,
 		 mrq->cmd->arg, mrq->cmd->flags);
 
@@ -198,8 +365,122 @@ mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 
 static void mmc_wait_done(struct mmc_request *mrq)
 {
-	complete(mrq->done_data);
+	complete(&mrq->completion);
 }
+
+static void __mmc_start_req(struct mmc_host *host, struct mmc_request *mrq)
+{
+	init_completion(&mrq->completion);
+	mrq->done = mmc_wait_done;
+	mmc_start_request(host, mrq);
+}
+
+static void mmc_wait_for_req_done(struct mmc_host *host,
+				  struct mmc_request *mrq)
+{
+	struct mmc_command *cmd;
+
+	while (1) {
+		wait_for_completion(&mrq->completion);
+
+		cmd = mrq->cmd;
+		if (!cmd->error || !cmd->retries)
+			break;
+
+		pr_debug("%s: req failed (CMD%u): %d, retrying...\n",
+			 mmc_hostname(host), cmd->opcode, cmd->error);
+		cmd->retries--;
+		cmd->error = 0;
+		host->ops->request(host, mrq);
+	}
+}
+
+/**
+ *	mmc_pre_req - Prepare for a new request
+ *	@host: MMC host to prepare command
+ *	@mrq: MMC request to prepare for
+ *	@is_first_req: true if there is no previous started request
+ *                     that may run in parellel to this call, otherwise false
+ *
+ *	mmc_pre_req() is called in prior to mmc_start_req() to let
+ *	host prepare for the new request. Preparation of a request may be
+ *	performed while another request is running on the host.
+ */
+static void mmc_pre_req(struct mmc_host *host, struct mmc_request *mrq,
+		 bool is_first_req)
+{
+	if (host->ops->pre_req)
+		host->ops->pre_req(host, mrq, is_first_req);
+}
+
+/**
+ *	mmc_post_req - Post process a completed request
+ *	@host: MMC host to post process command
+ *	@mrq: MMC request to post process for
+ *	@err: Error, if non zero, clean up any resources made in pre_req
+ *
+ *	Let the host post process a completed request. Post processing of
+ *	a request may be performed while another reuqest is running.
+ */
+static void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
+			 int err)
+{
+	if (host->ops->post_req)
+		host->ops->post_req(host, mrq, err);
+}
+
+/**
+ *	mmc_start_req - start a non-blocking request
+ *	@host: MMC host to start command
+ *	@areq: async request to start
+ *	@error: out parameter returns 0 for success, otherwise non zero
+ *
+ *	Start a new MMC custom command request for a host.
+ *	If there is on ongoing async request wait for completion
+ *	of that request and start the new one and return.
+ *	Does not wait for the new request to complete.
+ *
+ *      Returns the completed request, NULL in case of none completed.
+ *	Wait for the an ongoing request (previoulsy started) to complete and
+ *	return the completed request. If there is no ongoing request, NULL
+ *	is returned without waiting. NULL is not an error condition.
+ */
+struct mmc_async_req *mmc_start_req(struct mmc_host *host,
+				    struct mmc_async_req *areq, int *error)
+{
+	int err = 0;
+	struct mmc_async_req *data = host->areq;
+
+	/* Prepare a new request */
+	if (areq)
+		mmc_pre_req(host, areq->mrq, !host->areq);
+
+	if (host->areq) {
+		mmc_wait_for_req_done(host, host->areq->mrq);
+		err = host->areq->err_check(host->card, host->areq);
+		if (err) {
+			mmc_post_req(host, host->areq->mrq, 0);
+			if (areq)
+				mmc_post_req(host, areq->mrq, -EINVAL);
+
+			host->areq = NULL;
+			goto out;
+		}
+	}
+
+	if (areq)
+		__mmc_start_req(host, areq->mrq);
+
+	if (host->areq)
+		mmc_post_req(host, host->areq->mrq, 0);
+
+	host->areq = areq;
+ out:
+	if (error)
+		*error = err;
+	return data;
+}
+EXPORT_SYMBOL(mmc_start_req);
 
 /**
  *	mmc_wait_for_req - start a request and wait for completion
@@ -212,16 +493,9 @@ static void mmc_wait_done(struct mmc_request *mrq)
  */
 void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq)
 {
-	DECLARE_COMPLETION_ONSTACK(complete);
-
-	mrq->done_data = &complete;
-	mrq->done = mmc_wait_done;
-
-	mmc_start_request(host, mrq);
-
-	wait_for_completion(&complete);
+	__mmc_start_req(host, mrq);
+	mmc_wait_for_req_done(host, mrq);
 }
-
 EXPORT_SYMBOL(mmc_wait_for_req);
 
 /**
@@ -1540,6 +1814,82 @@ int mmc_erase_group_aligned(struct mmc_card *card, unsigned int from,
 }
 EXPORT_SYMBOL(mmc_erase_group_aligned);
 
+static unsigned int mmc_do_calc_max_discard(struct mmc_card *card,
+					    unsigned int arg)
+{
+	struct mmc_host *host = card->host;
+	unsigned int max_discard, x, y, qty = 0, max_qty, timeout;
+	unsigned int last_timeout = 0;
+
+	if (card->erase_shift)
+		max_qty = UINT_MAX >> card->erase_shift;
+	else if (mmc_card_sd(card))
+		max_qty = UINT_MAX;
+	else
+		max_qty = UINT_MAX / card->erase_size;
+
+	/* Find the largest qty with an OK timeout */
+	do {
+		y = 0;
+		for (x = 1; x && x <= max_qty && max_qty - x >= qty; x <<= 1) {
+			timeout = mmc_erase_timeout(card, arg, qty + x);
+			if (timeout > host->max_discard_to)
+				break;
+			if (timeout < last_timeout)
+				break;
+			last_timeout = timeout;
+			y = x;
+		}
+		qty += y;
+	} while (y);
+
+	if (!qty)
+		return 0;
+
+	if (qty == 1)
+		return 1;
+
+	/* Convert qty to sectors */
+	if (card->erase_shift)
+		max_discard = --qty << card->erase_shift;
+	else if (mmc_card_sd(card))
+		max_discard = qty;
+	else
+		max_discard = --qty * card->erase_size;
+
+	return max_discard;
+}
+
+unsigned int mmc_calc_max_discard(struct mmc_card *card)
+{
+	struct mmc_host *host = card->host;
+	unsigned int max_discard, max_trim;
+
+	if (!host->max_discard_to)
+		return UINT_MAX;
+
+	/*
+	 * Without erase_group_def set, MMC erase timeout depends on clock
+	 * frequence which can change.  In that case, the best choice is
+	 * just the preferred erase size.
+	 */
+	if (mmc_card_mmc(card) && !(card->ext_csd.erase_group_def & 1))
+		return card->pref_erase;
+
+	max_discard = mmc_do_calc_max_discard(card, MMC_ERASE_ARG);
+	if (mmc_can_trim(card)) {
+		max_trim = mmc_do_calc_max_discard(card, MMC_TRIM_ARG);
+		if (max_trim < max_discard)
+			max_discard = max_trim;
+	} else if (max_discard < card->erase_size) {
+		max_discard = 0;
+	}
+	pr_debug("%s: calculated max. discard sectors %u for timeout %u ms\n",
+		 mmc_hostname(host), max_discard, host->max_discard_to);
+	return max_discard;
+}
+EXPORT_SYMBOL(mmc_calc_max_discard);
+
 int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen)
 {
 	struct mmc_command cmd = {0};
@@ -1562,6 +1912,7 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 	pr_info("%s: %s: trying to init card at %u Hz\n",
 		mmc_hostname(host), __func__, host->f_init);
 #endif
+	host->rescan_on = TRUE;
 	mmc_power_up(host);
 
 	/*
@@ -1575,14 +1926,21 @@ static int mmc_rescan_try_freq(struct mmc_host *host, unsigned freq)
 	mmc_send_if_cond(host, host->ocr_avail);
 
 	/* Order's important: probe SDIO, then SD, then MMC */
-	if (!mmc_attach_sdio(host))
+	if (!mmc_attach_sdio(host)) {
+		host->rescan_on = FALSE;
 		return 0;
-	if (!mmc_attach_sd(host))
+	}
+	if (!mmc_attach_sd(host)) {
+		host->rescan_on = FALSE;
 		return 0;
-	if (!mmc_attach_mmc(host))
+	}
+	if (!mmc_attach_mmc(host)) {
+		host->rescan_on = FALSE;
 		return 0;
+	}
 
 	mmc_power_off(host);
+	host->rescan_on = FALSE;
 	return -EIO;
 }
 

@@ -4,6 +4,9 @@
 #include <linux/spinlock.h>
 #include <linux/list.h>
 #include <linux/cpumask.h>
+#ifdef CONFIG_FALCON
+#include <linux/module.h>
+#endif
 
 #include <asm/atomic.h>
 #include <asm/pgtable.h>
@@ -23,3 +26,6 @@ struct mm_struct init_mm = {
 	.mmlist		= LIST_HEAD_INIT(init_mm.mmlist),
 	INIT_MM_CONTEXT(init_mm)
 };
+#ifdef CONFIG_FALCON
+EXPORT_SYMBOL(init_mm);
+#endif

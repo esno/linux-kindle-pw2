@@ -32,7 +32,11 @@ const char *const pm_states[PM_SUSPEND_MAX] = {
 	[PM_SUSPEND_MEM]	= "mem",
 };
 
+#ifndef CONFIG_FALCON
 static const struct platform_suspend_ops *suspend_ops;
+#else
+const struct platform_suspend_ops *suspend_ops;
+#endif
 
 /**
  *	suspend_set_ops - Set the global suspend method table.

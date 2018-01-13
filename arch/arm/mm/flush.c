@@ -300,7 +300,7 @@ void flush_dcache_page(struct page *page)
 			__flush_dcache_aliases(mapping, page);
 		else if (mapping)
 			__flush_icache_all();
-		set_bit(PG_dcache_clean, &page->flags);
+
 	}
 }
 EXPORT_SYMBOL(flush_dcache_page);

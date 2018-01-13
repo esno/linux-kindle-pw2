@@ -161,9 +161,77 @@ static int mmc_clock_opt_set(void *data, u64 val)
 DEFINE_SIMPLE_ATTRIBUTE(mmc_clock_fops, mmc_clock_opt_get, mmc_clock_opt_set,
 	"%llu\n");
 
+static int mmc_cbprint_show(struct seq_file *s, void *data)
+{
+        struct mmc_host *host = s->private;
+
+        seq_printf(s, "%s circular buffer printing is %s\n",
+                   mmc_hostname(host), host->mmc_print_initialized ? "ON" : "OFF");
+        return 0;
+}
+
+static int mmc_cbprint_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mmc_cbprint_show, inode->i_private);
+}
+
+static int mmc_cbprint_write(struct file *file, const char *buf, size_t count, loff_t *offset)
+{
+        struct seq_file *s = file->private_data;
+	struct mmc_host	*host = s->private;
+
+	if (buf[0] == '0') {
+		/* Disable printing */
+		if (host->mmc_print_initialized)
+			mmc_print_destroy(host);
+	} else {
+		/* Enable printing */
+		if (!host->mmc_print_initialized)
+			mmc_print_init(host);
+	}
+	return count;
+}
+
+static const struct file_operations mmc_cbprint_fops = {
+	.open		= mmc_cbprint_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+        .write          = mmc_cbprint_write,
+	.release	= single_release,
+};
+
+static int mmc_cbuff_show(struct seq_file *s, void *data)
+{
+        struct mmc_host *host = s->private;
+	int retval;
+	int count;
+
+	count = 0;
+	do {
+		retval = mmc_dump_from_fifo(host);
+	} while (retval != ENOENT && retval != EPERM && ++count);
+	
+	seq_printf(s, "%d chunks printed\n", count);
+
+        return 0;
+}
+
+static int mmc_cbuff_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mmc_cbuff_show, inode->i_private);
+}
+
+static const struct file_operations mmc_cbuff_fops = {
+	.open		= mmc_cbuff_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 void mmc_add_host_debugfs(struct mmc_host *host)
 {
 	struct dentry *root;
+        struct dentry *cb;
 
 	root = debugfs_create_dir(mmc_hostname(host), NULL);
 	if (IS_ERR(root))
@@ -188,8 +256,25 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 				root, &host->clk_delay))
 		goto err_node;
 #endif
+
+        /*
+         * Create circular buffer entries.
+         */
+        cb = debugfs_create_dir("cb", root);
+        if (!cb)
+            goto err_node;
+
+        if (!debugfs_create_file("cbprint", (S_IWUSR|S_IRUGO), cb, host,
+                                 &mmc_cbprint_fops))
+                goto err_cb;
+        
+	if (!debugfs_create_file("cbuff", S_IRUSR, cb, host, &mmc_cbuff_fops))
+		goto err_cb;
+
 	return;
 
+err_cb:
+        debugfs_remove_recursive(cb);
 err_node:
 	debugfs_remove_recursive(root);
 	host->debugfs_root = NULL;

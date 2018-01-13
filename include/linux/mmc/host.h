@@ -12,6 +12,7 @@
 
 #include <linux/leds.h>
 #include <linux/sched.h>
+#include <linux/circ_buf.h>
 
 #include <linux/mmc/core.h>
 #include <linux/mmc/pm.h>
@@ -106,6 +107,15 @@ struct mmc_host_ops {
 	 */
 	int (*enable)(struct mmc_host *host);
 	int (*disable)(struct mmc_host *host, int lazy);
+	/*
+	 * It is optional for the host to implement pre_req and post_req in
+	 * order to support double buffering of requests (prepare one
+	 * request while another request is active).
+	 */
+	void	(*post_req)(struct mmc_host *host, struct mmc_request *req,
+			    int err);
+	void	(*pre_req)(struct mmc_host *host, struct mmc_request *req,
+			   bool is_first_req);
 	void	(*request)(struct mmc_host *host, struct mmc_request *req);
 	/*
 	 * Avoid calling these three functions too often or in a "fast path",
@@ -139,10 +149,23 @@ struct mmc_host_ops {
 	int	(*start_signal_voltage_switch)(struct mmc_host *host, struct mmc_ios *ios);
 	int	(*execute_tuning)(struct mmc_host *host);
 	void	(*enable_preset_value)(struct mmc_host *host, bool enable);
+#ifdef CONFIG_LAB126
+        int    (*reset_card)(struct mmc_host *host);
+#endif /* CONFIG_LAB126 */
 };
 
 struct mmc_card;
 struct device;
+
+struct mmc_async_req {
+	/* active mmc request */
+	struct mmc_request	*mrq;
+	/*
+	 * Check error status of completed mmc request.
+	 * Returns 0 if success otherwise non zero.
+	 */
+	int (*err_check) (struct mmc_card *, struct mmc_async_req *);
+};
 
 struct mmc_host {
 	struct device		*parent;
@@ -231,6 +254,10 @@ struct mmc_host {
 	unsigned int		max_req_size;	/* maximum number of bytes in one req */
 	unsigned int		max_blk_size;	/* maximum size of one mmc block */
 	unsigned int		max_blk_count;	/* maximum number of blocks in one req */
+	unsigned int		tuning_min;
+	unsigned int		tuning_max;
+	unsigned int		tuning_step;
+	unsigned int		max_discard_to;	/* max. discard timeout in ms */
 
 	/* private data */
 	spinlock_t		lock;		/* lock for claim and bus ops */
@@ -272,6 +299,9 @@ struct mmc_host {
 
 	mmc_pm_flag_t		pm_flags;	/* requested pm features */
 
+#ifdef CONFIG_LAB126
+	bool			rescan_on;      /* to ignore CTOE */
+#endif
 #ifdef CONFIG_LEDS_TRIGGERS
 	struct led_trigger	*led;		/* activity led */
 #endif
@@ -281,6 +311,13 @@ struct mmc_host {
 #endif
 
 	struct dentry		*debugfs_root;
+
+        struct circ_buf         mmc_print_buf;
+        bool                    mmc_print_initialized;
+        spinlock_t              mmc_print_lock;
+        spinlock_t              mmc_dump_lock;
+
+	struct mmc_async_req	*areq;		/* active async req */
 
 	unsigned long		private[0] ____cacheline_aligned;
 };

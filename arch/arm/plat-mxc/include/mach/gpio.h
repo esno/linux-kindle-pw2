@@ -44,6 +44,9 @@ struct mxc_gpio_port {
 	struct gpio_chip chip;
 	u32 both_edges;
 	spinlock_t lock;
+
+	u32 is_wake;
+	u32 forced_enable;
 };
 
 #define DEFINE_IMX_GPIO_PORT_IRQ_HIGH(soc, _id, _hwid, _irq, _irq_high)	\

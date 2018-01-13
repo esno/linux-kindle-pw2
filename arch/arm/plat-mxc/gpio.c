@@ -3,7 +3,7 @@
  * Copyright 2008 Juergen Beisert, kernel@pengutronix.de
  *
  * Based on code from Freescale,
- * Copyright (C) 2004-2010 Freescale Semiconductor, Inc. All Rights Reserved.
+ * Copyright (C) 2004-2012 Freescale Semiconductor, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,8 +24,10 @@
 #include <linux/io.h>
 #include <linux/irq.h>
 #include <linux/gpio.h>
+#include <linux/syscore_ops.h>
 #include <mach/hardware.h>
 #include <asm-generic/bug.h>
+#include <asm/mach/irq.h>
 
 static struct mxc_gpio_port *mxc_gpio_ports;
 static int gpio_table_size;
@@ -176,11 +178,16 @@ static void mx3_gpio_irq_handler(u32 irq, struct irq_desc *desc)
 {
 	u32 irq_stat;
 	struct mxc_gpio_port *port = irq_get_handler_data(irq);
+	struct irq_chip *chip = irq_get_chip(irq);
+
+	chained_irq_enter(chip, desc);
 
 	irq_stat = __raw_readl(port->base + GPIO_ISR) &
 			__raw_readl(port->base + GPIO_IMR);
 
 	mxc_gpio_irq_handler(port, irq_stat);
+
+	chained_irq_exit(chip, desc);
 }
 
 /* MX2 has one interrupt *for all* gpio ports */
@@ -218,11 +225,13 @@ static int gpio_set_wake_irq(struct irq_data *d, u32 enable)
 	struct mxc_gpio_port *port = &mxc_gpio_ports[gpio / 32];
 
 	if (enable) {
+		port->is_wake |= (1<<gpio_idx);
 		if (port->irq_high && (gpio_idx >= 16))
 			enable_irq_wake(port->irq_high);
 		else
 			enable_irq_wake(port->irq);
 	} else {
+		port->is_wake &= ~(1<<gpio_idx);
 		if (port->irq_high && (gpio_idx >= 16))
 			disable_irq_wake(port->irq_high);
 		else
@@ -301,9 +310,39 @@ static int mxc_gpio_direction_output(struct gpio_chip *chip,
  */
 static struct lock_class_key gpio_lock_class;
 
-int __init mxc_gpio_init(struct mxc_gpio_port *port, int cnt)
+static int mxc_syscore_suspend(void) {
+	//Forcibly unmask all wake source IRQs
+	int i;
+	for (i=0; i<gpio_table_size; i++) {
+		struct mxc_gpio_port *port = mxc_gpio_ports + i;
+
+		u32 irq_en = __raw_readl(port->base + GPIO_IMR);
+		port->forced_enable = port->is_wake & ~irq_en;
+		__raw_writel(irq_en|port->forced_enable, port->base + GPIO_IMR);
+	}
+	return 0;
+}
+
+static void mxc_syscore_resume(void) {
+	int i;
+	for (i=0; i<gpio_table_size; i++) {
+		struct mxc_gpio_port *port = mxc_gpio_ports + i;
+
+		u32 irq_en = __raw_readl(port->base + GPIO_IMR);
+		irq_en = irq_en & ~(port->forced_enable);
+		__raw_writel(irq_en, port->base + GPIO_IMR);
+	}
+}
+
+static struct syscore_ops gpio_ops = {
+	.suspend = mxc_syscore_suspend,
+	.resume = mxc_syscore_resume
+};
+
+int mxc_gpio_init(struct mxc_gpio_port *port, int cnt)
 {
 	int i, j;
+	static bool initialed;
 
 	/* save for local usage */
 	mxc_gpio_ports = port;
@@ -331,12 +370,18 @@ int __init mxc_gpio_init(struct mxc_gpio_port *port, int cnt)
 		port[i].chip.base = i * 32;
 		port[i].chip.ngpio = 32;
 
+		port[i].is_wake = 0;
+		port[i].forced_enable = 0;
+
 		spin_lock_init(&port[i].lock);
 
-		/* its a serious configuration bug when it fails */
-		BUG_ON( gpiochip_add(&port[i].chip) < 0 );
+		if (!initialed)
+			/* its a serious configuration bug when it fails */
+			BUG_ON(gpiochip_add(&port[i].chip) < 0);
 
-		if (cpu_is_mx1() || cpu_is_mx3() || cpu_is_mx25() || cpu_is_mx51()) {
+		if (cpu_is_mx1() || cpu_is_mx3() || cpu_is_mx25() ||
+			cpu_is_mx51() || cpu_is_mx53() || cpu_is_mx6q() ||
+			cpu_is_mx6dl() || cpu_is_mx6sl()) {
 			/* setup one handler for each entry */
 			irq_set_chained_handler(port[i].irq,
 						mx3_gpio_irq_handler);
@@ -350,12 +395,14 @@ int __init mxc_gpio_init(struct mxc_gpio_port *port, int cnt)
 			}
 		}
 	}
-
+	initialed = true;
 	if (cpu_is_mx2()) {
 		/* setup one handler for all GPIO interrupts */
 		irq_set_chained_handler(port[0].irq, mx2_gpio_irq_handler);
 		irq_set_handler_data(port[0].irq, port);
 	}
+
+	register_syscore_ops(&gpio_ops);
 
 	return 0;
 }

@@ -140,6 +140,16 @@ static inline bool mmc_op_multi(u32 opcode)
 #define R1_SWITCH_ERROR		(1 << 7)	/* sx, c */
 #define R1_APP_CMD		(1 << 5)	/* sr, c */
 
+#define R1_STATE_IDLE	0
+#define R1_STATE_READY	1
+#define R1_STATE_IDENT	2
+#define R1_STATE_STBY	3
+#define R1_STATE_TRAN	4
+#define R1_STATE_DATA	5
+#define R1_STATE_RCV	6
+#define R1_STATE_PRG	7
+#define R1_STATE_DIS	8
+
 /*
  * MMC/SD in SPI mode reports R1 status always, and R2 for SEND_STATUS
  * R1 is the low order byte; R2 is the next highest byte, when present.
@@ -262,6 +272,7 @@ struct _mmc_csd {
 
 #define EXT_CSD_PARTITION_ATTRIBUTE	156	/* R/W */
 #define EXT_CSD_PARTITION_SUPPORT	160	/* RO */
+#define EXT_CSD_RST_N_FUNCTION          162     /* R/W */
 #define EXT_CSD_WR_REL_PARAM		166	/* RO */
 #define EXT_CSD_ERASE_GROUP_DEF		175	/* R/W */
 #define EXT_CSD_PART_CONFIG		179	/* R/W */
@@ -283,6 +294,8 @@ struct _mmc_csd {
 #define EXT_CSD_SEC_ERASE_MULT		230	/* RO */
 #define EXT_CSD_SEC_FEATURE_SUPPORT	231	/* RO */
 #define EXT_CSD_TRIM_MULT		232	/* RO */
+#define EXT_CSD_BOOT_INFO		228	/* RO, 1 bytes */
+#define EXT_CSD_BOOT_BUS_WIDTH		177
 
 /*
  * EXT_CSD field definitions
@@ -317,6 +330,34 @@ struct _mmc_csd {
 #define EXT_CSD_SEC_ER_EN	BIT(0)
 #define EXT_CSD_SEC_BD_BLK_EN	BIT(2)
 #define EXT_CSD_SEC_GB_CL_EN	BIT(4)
+
+#define EXT_CSD_BOOT_BUS_WIDTH_MASK			(0x1F)
+#define EXT_CSD_BOOT_BUS_WIDTH_MODE_MASK	(0x3 << 3)
+#define EXT_CSD_BOOT_BUS_WIDTH_MODE_SDR_NORMAL	(0x0)
+#define EXT_CSD_BOOT_BUS_WIDTH_MODE_SDR_HIGH	(0x1)
+#define EXT_CSD_BOOT_BUS_WIDTH_MODE_DDR		(0x2)
+#define EXT_CSD_BOOT_BUS_WIDTH_RST_WIDTH	(1 << 2)
+#define EXT_CSD_BOOT_BUS_WIDTH_WIDTH_MASK	(0x3)
+#define EXT_CSD_BOOT_BUS_WIDTH_1_SDR_4_DDR	(0x0)
+#define EXT_CSD_BOOT_BUS_WIDTH_4_SDR_4_DDR	(0x1)
+#define EXT_CSD_BOOT_BUS_WIDTH_8_SDR_8_DDR	(0x2)
+
+#define EXT_CSD_BOOT_ACK_ENABLE		(0x1 << 6)
+#define EXT_CSD_BOOT_PARTITION_ENABLE_MASK      (0x7 << 3)
+#define EXT_CSD_BOOT_PARTITION_DISABLE          (0x0)
+#define EXT_CSD_BOOT_PARTITION_PART1            (0x1 << 3)
+#define EXT_CSD_BOOT_PARTITION_PART2            (0x2 << 3)
+#define EXT_CSD_BOOT_PARTITION_USER             (0x7 << 3)
+
+#define EXT_CSD_BOOT_PARTITION_ACCESS_MASK      (0x7)
+#define EXT_CSD_BOOT_PARTITION_ACCESS_DISABLE   (0x0)
+#define EXT_CSD_BOOT_PARTITION_ACCESS_PART1     (0x1)
+#define EXT_CSD_BOOT_PARTITION_ACCESS_PART2     (0x2)
+
+#define EXT_CSD_RST_N_TEMPORARY_DISABLE         (0x0)
+#define EXT_CSD_RST_N_PERMANENT_ENABLE          (0x1)
+#define EXT_CSD_RST_N_PERMANENT_DISABLE         (0x2)
+#define EXT_CSD_RST_N_ENABLE_MASK               (0x3)
 
 /*
  * MMC_SWITCH access modes

@@ -33,10 +33,25 @@
 #define DEF_SAMPLING_DOWN_FACTOR		(1)
 #define MAX_SAMPLING_DOWN_FACTOR		(100000)
 #define MICRO_FREQUENCY_DOWN_DIFFERENTIAL	(3)
-#define MICRO_FREQUENCY_UP_THRESHOLD		(95)
+#define MICRO_FREQUENCY_UP_THRESHOLD		(80)
 #define MICRO_FREQUENCY_MIN_SAMPLE_RATE		(10000)
 #define MIN_FREQUENCY_UP_THRESHOLD		(11)
 #define MAX_FREQUENCY_UP_THRESHOLD		(100)
+
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+/* Default duration of the frequency override */
+#define DEF_OVERRIDE_DURATION_MS    (600)
+/* Grace period after the override with up threshold set low */
+#define OVERRIDE_GRACE_TIMEOUT (1000)
+/* Up threshold during override full and grace period */
+#define OVERRIDE_UP_THRESHOLD (30)
+/* No override active */
+#define OVERRIDE_NONE  0
+/* Override in the grace period */
+#define OVERRIDE_GRACE 1
+/* Override is in full effect */
+#define OVERRIDE_FULL  2
+#endif
 
 /*
  * The polling frequency of this governor depends on the capability of
@@ -59,16 +74,6 @@ static unsigned int min_sampling_rate;
 static void do_dbs_timer(struct work_struct *work);
 static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 				unsigned int event);
-
-#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
-static
-#endif
-struct cpufreq_governor cpufreq_gov_ondemand = {
-       .name                   = "ondemand",
-       .governor               = cpufreq_governor_dbs,
-       .max_transition_latency = TRANSITION_LATENCY_LIMIT,
-       .owner                  = THIS_MODULE,
-};
 
 /* Sampling types */
 enum {DBS_NORMAL_SAMPLE, DBS_SUB_SAMPLE};
@@ -111,12 +116,26 @@ static struct dbs_tuners {
 	unsigned int sampling_down_factor;
 	unsigned int powersave_bias;
 	unsigned int io_is_busy;
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+	unsigned int override;
+	unsigned int override_delay;
+	unsigned int override_grace_delay;
+	unsigned int override_up_threshold;
+	unsigned long override_timeout;
+#endif
 } dbs_tuners_ins = {
 	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
 	.sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR,
 	.down_differential = DEF_FREQUENCY_DOWN_DIFFERENTIAL,
 	.ignore_nice = 0,
 	.powersave_bias = 0,
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126  
+	.override = OVERRIDE_NONE,
+	.override_delay = DEF_OVERRIDE_DURATION_MS,
+	.override_grace_delay = OVERRIDE_GRACE_TIMEOUT,
+	.override_up_threshold = OVERRIDE_UP_THRESHOLD, 
+	.override_timeout = 0,
+#endif
 };
 
 static inline cputime64_t get_cpu_idle_time_jiffy(unsigned int cpu,
@@ -256,6 +275,13 @@ show_one(sampling_down_factor, sampling_down_factor);
 show_one(ignore_nice_load, ignore_nice);
 show_one(powersave_bias, powersave_bias);
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+show_one(override, override);
+show_one(override_delay, override_delay);
+show_one(override_grace_delay, override_grace_delay);
+show_one(override_up_threshold, override_up_threshold);
+#endif
+
 static ssize_t store_sampling_rate(struct kobject *a, struct attribute *b,
 				   const char *buf, size_t count)
 {
@@ -349,6 +375,83 @@ static ssize_t store_ignore_nice_load(struct kobject *a, struct attribute *b,
 	return count;
 }
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+static ssize_t store_override(struct kobject *a, struct attribute *b,
+		const char *buf, size_t count)
+{
+	unsigned int input;
+	int ret;
+
+	ret = sscanf(buf, "%u", &input);
+
+	if (ret != 1)
+		return -EINVAL;
+
+	if (input > 0)
+		input = OVERRIDE_FULL;
+
+	mutex_lock(&dbs_mutex);
+	dbs_tuners_ins.override = input;
+	if (input)
+	{
+		// Reset the override timer here
+		dbs_tuners_ins.override_timeout = jiffies + msecs_to_jiffies(dbs_tuners_ins.override_delay);
+		dbs_tuners_ins.up_threshold = min(dbs_tuners_ins.override_up_threshold, (unsigned int)MICRO_FREQUENCY_UP_THRESHOLD);
+	}
+	mutex_unlock(&dbs_mutex);
+	return count;
+}
+
+static ssize_t store_override_delay(struct kobject *a, struct attribute *b,
+		const char *buf, size_t count)
+{
+	unsigned int input;
+	int ret;
+
+	ret = sscanf(buf, "%u", &input);
+	if (ret != 1)
+		return -EINVAL;
+
+	mutex_lock(&dbs_mutex);
+	dbs_tuners_ins.override_delay = input;
+	mutex_unlock(&dbs_mutex);
+	return count;
+}
+
+static ssize_t store_override_grace_delay(struct kobject *a, struct attribute *b,
+		const char *buf, size_t count)
+{
+	unsigned int input;
+	int ret;
+
+	ret = sscanf(buf, "%u", &input);
+	if (ret != 1)
+		return -EINVAL;
+
+	mutex_lock(&dbs_mutex);
+	dbs_tuners_ins.override_grace_delay = input;
+	mutex_unlock(&dbs_mutex);
+	return count;
+}
+
+
+static ssize_t store_override_up_threshold(struct kobject *a, struct attribute *b,
+		const char *buf, size_t count)
+{
+	unsigned int input;
+	int ret;
+
+	ret = sscanf(buf, "%u", &input);
+	if (ret != 1)
+		return -EINVAL;
+
+	mutex_lock(&dbs_mutex);
+	dbs_tuners_ins.override_up_threshold = input;
+	mutex_unlock(&dbs_mutex);
+	return count;
+}
+#endif
+
 static ssize_t store_powersave_bias(struct kobject *a, struct attribute *b,
 				    const char *buf, size_t count)
 {
@@ -374,6 +477,13 @@ define_one_global_rw(sampling_down_factor);
 define_one_global_rw(ignore_nice_load);
 define_one_global_rw(powersave_bias);
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+define_one_global_rw(override);
+define_one_global_rw(override_delay);
+define_one_global_rw(override_grace_delay);
+define_one_global_rw(override_up_threshold);
+#endif
+
 static struct attribute *dbs_attributes[] = {
 	&sampling_rate_min.attr,
 	&sampling_rate.attr,
@@ -382,6 +492,12 @@ static struct attribute *dbs_attributes[] = {
 	&ignore_nice_load.attr,
 	&powersave_bias.attr,
 	&io_is_busy.attr,
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+	&override.attr,
+	&override_delay.attr,
+	&override_grace_delay.attr,
+	&override_up_threshold.attr,
+#endif
 	NULL
 };
 
@@ -391,6 +507,33 @@ static struct attribute_group dbs_attr_group = {
 };
 
 /************************** sysfs end ************************/
+
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+/* LAB126 Disable the override if the timer has experied */
+static void update_override_timer(void)
+{
+	if (dbs_tuners_ins.override == OVERRIDE_FULL)
+	{
+		/* Override has expired. Switch to grace period */
+		if (jiffies > dbs_tuners_ins.override_timeout)
+		{
+			dbs_tuners_ins.override = OVERRIDE_GRACE;
+			dbs_tuners_ins.override_timeout = jiffies + msecs_to_jiffies(dbs_tuners_ins.override_grace_delay);
+		}
+	}
+	else if (dbs_tuners_ins.override == OVERRIDE_GRACE)
+	{
+		/* We're in the grace period */
+		if (jiffies > dbs_tuners_ins.override_timeout)
+		{
+			dbs_tuners_ins.override = OVERRIDE_NONE;
+			/* Reset the up threshold */
+			dbs_tuners_ins.up_threshold = MICRO_FREQUENCY_UP_THRESHOLD;
+			dbs_tuners_ins.override_timeout = 0;
+		}
+	}
+}
+#endif
 
 static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
 {
@@ -550,6 +693,21 @@ static void do_dbs_timer(struct work_struct *work)
 
 	mutex_lock(&dbs_info->timer_mutex);
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+	/* LAB126 Check if the override timer has expired */
+	update_override_timer();
+	
+	/* LAB126 Force full speed when the override is at FULL */
+	if (dbs_tuners_ins.override == OVERRIDE_FULL)
+	{
+		struct cpufreq_policy *policy = dbs_info->cur_policy;
+		dbs_freq_increase(policy, policy->max);
+		schedule_delayed_work_on(cpu, &dbs_info->work, usecs_to_jiffies(dbs_tuners_ins.sampling_rate));
+		mutex_unlock(&dbs_info->timer_mutex);
+		return;
+	}
+#endif
+
 	/* Common NORMAL_SAMPLE setup */
 	dbs_info->sample_type = DBS_NORMAL_SAMPLE;
 	if (!dbs_tuners_ins.powersave_bias ||
@@ -595,6 +753,40 @@ static inline void dbs_timer_exit(struct cpu_dbs_info_s *dbs_info)
 {
 	cancel_delayed_work_sync(&dbs_info->work);
 }
+
+
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+/* LAB126 Enables the override which will force the CPU at max frequency
+ * for override_delay duration.
+ * The timer is reset when is_override is set > 0
+ */
+static int cpufreq_governor_override(struct cpufreq_policy *policy,
+		unsigned int is_override)
+{
+	unsigned int cpu = policy->cpu;
+	struct cpu_dbs_info_s *this_dbs_info;
+
+	this_dbs_info = &per_cpu(od_cpu_dbs_info, cpu);
+	mutex_lock(&this_dbs_info->timer_mutex);
+
+	if (is_override > 0)
+		is_override = OVERRIDE_FULL;
+
+	mutex_lock(&dbs_mutex);
+
+	dbs_tuners_ins.override = is_override;
+	if (is_override)
+	{
+		// Reset the override timer 
+		dbs_tuners_ins.override_timeout = jiffies + msecs_to_jiffies(dbs_tuners_ins.override_delay);
+		dbs_tuners_ins.up_threshold = min(dbs_tuners_ins.override_up_threshold, (unsigned int)MICRO_FREQUENCY_UP_THRESHOLD);
+		dbs_freq_increase(policy, policy->max);
+	}
+	mutex_unlock(&this_dbs_info->timer_mutex);
+	mutex_unlock(&dbs_mutex);
+	return 0;
+}
+#endif
 
 /*
  * Not all CPUs want IO time to be accounted as busy; this dependson how
@@ -710,6 +902,20 @@ static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 	}
 	return 0;
 }
+
+
+#ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
+static
+#endif
+struct cpufreq_governor cpufreq_gov_ondemand = {
+       .name                   = "ondemand",
+       .governor               = cpufreq_governor_dbs,
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126
+       .override               = cpufreq_governor_override,
+#endif
+       .max_transition_latency = TRANSITION_LATENCY_LIMIT,
+       .owner                  = THIS_MODULE,
+};
 
 static int __init cpufreq_gov_dbs_init(void)
 {

@@ -213,6 +213,17 @@ config RTC_DRV_MAX8998
 	  This driver can also be built as a module. If so, the module
 	  will be called rtc-max8998.
 
+config RTC_DRV_MAX77696
+	bool "MAX77696 RTC"
+	default y
+	depends on MFD_MAX77696
+	help
+	  If you say yes here you will get support for the
+	  RTC of Maxim MAX77696 PMIC.
+	
+	  This driver can also be built as a module. If so, the module
+	  will be called rtc-max77696.
+
 config RTC_DRV_RS5C372
 	tristate "Ricoh R2025S/D, RS5C372A/B, RV5C386, RV5C387A"
 	help
@@ -634,6 +645,21 @@ config RTC_MXC
 	   This driver can also be built as a module, if so, the module
 	   will be called "rtc-mxc".
 
+config RTC_DRV_MXC_V2
+	tristate "Freescale MXC Secure Real Time Clock"
+	depends on ARCH_MXC
+	depends on RTC_CLASS
+	help
+	   Support for Freescale SRTC MXC
+
+config RTC_DRV_SNVS
+	tristate "Freescale SNVS Real Time Clock"
+	depends on ARCH_MXC
+	depends on RTC_CLASS
+	help
+	   If you say yes here you get support for the Freescale SNVS
+	   Low Power (LP) RTC module.
+
 config RTC_DRV_BQ4802
 	tristate "TI BQ4802"
 	help
@@ -1004,6 +1030,13 @@ config RTC_DRV_MC13XXX
 	  This enables support for the RTCs found on Freescale's PMICs
 	  MC13783 and MC13892.
 
+config RTC_DRV_MC34708
+	depends on MFD_MC_PMIC
+	tristate "Freescale MC34708 RTC"
+	help
+	  This enables support for the RTCs found on Freescale's PMICs
+	  MC34708.
+
 config RTC_DRV_MPC5121
 	tristate "Freescale MPC5121 built-in RTC"
 	depends on PPC_MPC512x && RTC_CLASS
@@ -1033,6 +1066,13 @@ config RTC_DRV_LPC32XX
 
 	  This driver can also be buillt as a module. If so, the module
 	  will be called rtc-lpc32xx.
+
+config RTC_DRV_DA9052
+	tristate "Dialog DA9052 RTC"
+	depends on PMIC_DIALOG
+	help
+	  Say y here to support the RTC found on
+	  Dialog Semiconductor DA9052 PMIC.
 
 config RTC_DRV_TEGRA
 	tristate "NVIDIA Tegra Internal RTC driver"

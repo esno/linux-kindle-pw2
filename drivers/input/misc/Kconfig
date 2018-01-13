@@ -12,6 +12,8 @@ menuconfig INPUT_MISC
 
 if INPUT_MISC
 
+source "drivers/input/misc/smtc/Kconfig"
+
 config INPUT_88PM860X_ONKEY
 	tristate "88PM860x ONKEY support"
 	depends on MFD_88PM860X
@@ -99,6 +101,13 @@ config INPUT_MAX8925_ONKEY
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called max8925_onkey.
+
+config INPUT_MAX77696_ONKEY
+    bool "MAX77696 ONKEY"
+    default y
+    depends on MFD_MAX77696
+    help
+      Say Y here if you want support for the MAX77696 ON key.
 
 config INPUT_APANEL
 	tristate "Fujitsu Lifebook Application Panel buttons"
@@ -478,4 +487,38 @@ config INPUT_XEN_KBDDEV_FRONTEND
 	  To compile this driver as a module, choose M here: the
 	  module will be called xen-kbdfront.
 
+config INPUT_DA9052_ONKEY
+	tristate "Dialog DA9052 Onkey"
+	depends on PMIC_DIALOG
+	help
+	  Support the ONKEY of Dialog DA9052 PMICs as an input device
+	  reporting power button status.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called da9052_onkey.
+
+config INPUT_ISL29023
+	tristate "Intersil ISL29023 ambient light sensor"
+	depends on I2C && SYSFS
+	help
+	  If you say yes here you get support for the Intersil ISL29023
+	  ambient light sensor.
+
+	  This driver can also be built as a module.  If so, the module
+	  will be called isl29023.
+
+config INPUT_PROX_PIC12LF1822
+	tristate "Wario Proximity Sensor Driver"
+	depends on MACH_MX6SL_WARIO
+	default n
+	help
+	  Proximity driver for Wario based devices.
+	
+config INPUT_ALS_MAX44009
+	tristate "MAXIM ALS Support - MAX44009"
+	depends on MACH_MX6SL_WARIO
+	default y
+	help
+	  If you say yes here you get support for Maxim(MAX44009) 
+	  ALS on Wario based devices.
 endif

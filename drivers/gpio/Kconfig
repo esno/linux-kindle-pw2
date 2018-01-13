@@ -398,6 +398,13 @@ config GPIO_MAX7301
 	help
 	  GPIO driver for Maxim MAX7301 SPI-based GPIO expander.
 
+config GPIO_MAX77696
+	bool "MAX77696 GPIO"
+	default y
+	depends on MFD_MAX77696
+	help
+	  GPIO driver for Maxim MAX77696 I2C-based GPIO expander.
+
 config GPIO_MCP23S08
 	tristate "Microchip MCP23Sxx I/O expander"
 	depends on SPI_MASTER
@@ -454,4 +461,11 @@ config GPIO_TPS65910
 	help
 	  Select this option to enable GPIO driver for the TPS65910
 	  chip family.
+
+config DA9052_GPIO_ENABLE
+	bool "Dialog DA9052 GPIO"
+	depends on PMIC_DIALOG
+	help
+	  Say Y  to enable the GPIO driver for the DA9052 chip
+
 endif

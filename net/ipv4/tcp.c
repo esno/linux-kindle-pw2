@@ -3219,7 +3219,7 @@ __setup("thash_entries=", set_thash_entries);
 void __init tcp_init(void)
 {
 	struct sk_buff *skb = NULL;
-	unsigned long limit;
+	unsigned long limit, nr_pages ;
 	int i, max_rshare, max_wshare, cnt;
 	unsigned long jiffy = jiffies;
 
@@ -3276,7 +3276,16 @@ void __init tcp_init(void)
 	sysctl_tcp_max_orphans = cnt / 2;
 	sysctl_max_syn_backlog = max(128, cnt / 256);
 
+#if defined(CONFIG_LAB126)
+	// Changing the way tcp_mem, tcp_rmem and tcp_wmem are calculated back to the 2.6 kernel configuration.
+	// With this change we get the max tcp_rmem and tcp_wmem from 256k (approx) to 1M (approx).
+	// download performances matches/exceeds J3 performance, addressing JIRA : JFOUR-9944. 
+	nr_pages = totalram_pages - totalhigh_pages;
+	limit = min(nr_pages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
+	limit = (limit * (nr_pages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
+#else
 	limit = nr_free_buffer_pages() / 8;
+#endif
 	limit = max(limit, 128UL);
 	sysctl_tcp_mem[0] = limit / 4 * 3;
 	sysctl_tcp_mem[1] = limit;

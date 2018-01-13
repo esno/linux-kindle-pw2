@@ -16,11 +16,29 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
+#include <mach/boardid.h>
+#include <boardid.h>
 
 #include "core.h"
 #include "bus.h"
 #include "mmc_ops.h"
 #include "sd_ops.h"
+
+#define TOSHIBA_MANF_ID		0x11
+#define SAMSUNG_MANF_ID		0x15
+#define SANDISK_MANF_ID		0x45
+#define HYNIX_MANF_ID		0x90
+#define MICRON_MANF_ID		0xFE
+
+#ifdef CONFIG_HAS_MMC_FORCE_OFF
+#define TEST_MMC_CTOE
+#endif
+
+#define HW_SUPPORT_EMMC_POWER_GATE  (lab126_board_is(BOARD_ID_MUSCAT_WFO) || \
+                                      lab126_board_is(BOARD_ID_MUSCAT_32G_WFO) ||\
+                                      lab126_board_is(BOARD_ID_MUSCAT_WAN) ||\
+                                      lab126_board_is(BOARD_ID_WHISKY_WFO) ||\
+                                      lab126_board_is(BOARD_ID_WHISKY_WAN))
 
 static const unsigned int tran_exp[] = {
 	10000,		100000,		1000000,	10000000,
@@ -259,11 +277,11 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 	}
 
 	card->ext_csd.rev = ext_csd[EXT_CSD_REV];
-	if (card->ext_csd.rev > 5) {
-		printk(KERN_ERR "%s: unrecognised EXT_CSD revision %d\n",
+	/* workaround: support emmc 5.0 (and 4.5 cards) to work at emmc 4.4 mode */
+	if (card->ext_csd.rev > 7) {
+		printk(KERN_WARNING "%s: unrecognised EXT_CSD revision %d. Continuing...\n",
 			mmc_hostname(card->host), card->ext_csd.rev);
-		err = -EINVAL;
-		goto out;
+		//Not bailing out from here to support the latest eMMC(rev = 8) 
 	}
 
 	card->ext_csd.raw_sectors[0] = ext_csd[EXT_CSD_SEC_CNT + 0];
@@ -281,20 +299,25 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		if (card->ext_csd.sectors > (2u * 1024 * 1024 * 1024) / 512)
 			mmc_card_set_blockaddr(card);
 	}
+
+	card->ext_csd.boot_info = ext_csd[EXT_CSD_BOOT_INFO];
+	card->ext_csd.boot_config = ext_csd[EXT_CSD_PART_CONFIG];
+	card->ext_csd.boot_bus_width = ext_csd[EXT_CSD_BOOT_BUS_WIDTH];
+
 	card->ext_csd.raw_card_type = ext_csd[EXT_CSD_CARD_TYPE];
 	switch (ext_csd[EXT_CSD_CARD_TYPE] & EXT_CSD_CARD_TYPE_MASK) {
 	case EXT_CSD_CARD_TYPE_DDR_52 | EXT_CSD_CARD_TYPE_52 |
-	     EXT_CSD_CARD_TYPE_26:
+		 EXT_CSD_CARD_TYPE_26:
 		card->ext_csd.hs_max_dtr = 52000000;
 		card->ext_csd.card_type = EXT_CSD_CARD_TYPE_DDR_52;
 		break;
 	case EXT_CSD_CARD_TYPE_DDR_1_2V | EXT_CSD_CARD_TYPE_52 |
-	     EXT_CSD_CARD_TYPE_26:
+		 EXT_CSD_CARD_TYPE_26:
 		card->ext_csd.hs_max_dtr = 52000000;
 		card->ext_csd.card_type = EXT_CSD_CARD_TYPE_DDR_1_2V;
 		break;
 	case EXT_CSD_CARD_TYPE_DDR_1_8V | EXT_CSD_CARD_TYPE_52 |
-	     EXT_CSD_CARD_TYPE_26:
+		 EXT_CSD_CARD_TYPE_26:
 		card->ext_csd.hs_max_dtr = 52000000;
 		card->ext_csd.card_type = EXT_CSD_CARD_TYPE_DDR_1_8V;
 		break;
@@ -361,7 +384,7 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 		 */
 		card->ext_csd.raw_partition_support = ext_csd[EXT_CSD_PARTITION_SUPPORT];
 		if ((ext_csd[EXT_CSD_PARTITION_SUPPORT] & 0x2) &&
-		    (ext_csd[EXT_CSD_PARTITION_ATTRIBUTE] & 0x1)) {
+			(ext_csd[EXT_CSD_PARTITION_ATTRIBUTE] & 0x1)) {
 			u8 hc_erase_grp_sz =
 				ext_csd[EXT_CSD_HC_ERASE_GRP_SIZE];
 			u8 hc_wp_grp_sz =
@@ -412,6 +435,7 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 	else
 		card->erased_byte = 0x0;
 
+	card->ext_csd.raw_rst_n_function = ext_csd[EXT_CSD_RST_N_FUNCTION];
 out:
 	return err;
 }
@@ -484,6 +508,299 @@ out:
 	return err;
 }
 
+/* switch the partitions */
+static ssize_t
+setup_boot_partitions(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	int err, busy = 0;
+	u32 part, new_part;
+	u8 *ext_csd, boot_config;
+	struct mmc_command cmd;
+	struct mmc_card *card = container_of(dev, struct mmc_card, dev);
+
+	BUG_ON(!card);
+
+	sscanf(buf, "%d\n", &part);
+
+	if (card->csd.mmca_vsn < CSD_SPEC_VER_4) {
+		printk(KERN_ERR "%s: invalid mmc version"
+			" mmc version is below version 4!)\n",
+			mmc_hostname(card->host));
+		return -EINVAL;
+	}
+
+	/* it's a normal SD/MMC but user request to configure boot partition */
+	if (card->ext_csd.boot_size <= 0) {
+		printk(KERN_ERR "%s: this is a normal SD/MMC card"
+			" but you request to access boot partition!\n",
+			mmc_hostname(card->host));
+		return -EINVAL;
+	}
+
+	ext_csd = kmalloc(512, GFP_KERNEL);
+	if (!ext_csd) {
+		printk(KERN_ERR "%s: could not allocate a buffer to "
+			"receive the ext_csd.\n", mmc_hostname(card->host));
+		return -ENOMEM;
+	}
+
+	mmc_claim_host(card->host);
+	err = mmc_send_ext_csd(card, ext_csd);
+	if (err) {
+		printk(KERN_ERR "%s: unable to read EXT_CSD.\n",
+			mmc_hostname(card->host));
+		goto err_rtn;
+	}
+
+	/* enable the boot partition in boot mode */
+	/* boot enable be -
+	 * 0x00 - disable boot enable.
+	 * 0x08 - boot partition 1 is enabled for boot.
+	 * 0x10 - boot partition 2 is enabled for boot.
+	 * 0x38 - User area is enabled for boot.
+	 */
+	switch (part & EXT_CSD_BOOT_PARTITION_ENABLE_MASK) {
+	case 0:
+		boot_config = (ext_csd[EXT_CSD_PART_CONFIG]
+				& ~EXT_CSD_BOOT_PARTITION_ENABLE_MASK
+				& ~EXT_CSD_BOOT_ACK_ENABLE);
+		break;
+	case EXT_CSD_BOOT_PARTITION_PART1:
+		boot_config = ((ext_csd[EXT_CSD_PART_CONFIG]
+				& ~EXT_CSD_BOOT_PARTITION_ENABLE_MASK)
+				| EXT_CSD_BOOT_PARTITION_PART1
+				| EXT_CSD_BOOT_ACK_ENABLE);
+		break;
+	case EXT_CSD_BOOT_PARTITION_PART2:
+		boot_config = ((ext_csd[EXT_CSD_PART_CONFIG]
+				& ~EXT_CSD_BOOT_PARTITION_ENABLE_MASK)
+				| EXT_CSD_BOOT_PARTITION_PART2
+				| EXT_CSD_BOOT_ACK_ENABLE);
+		break;
+	case EXT_CSD_BOOT_PARTITION_ENABLE_MASK:
+		boot_config = ((ext_csd[EXT_CSD_PART_CONFIG]
+				| EXT_CSD_BOOT_PARTITION_ENABLE_MASK)
+				& ~EXT_CSD_BOOT_ACK_ENABLE);
+		break;
+	default:
+		printk(KERN_ERR "%s: wrong boot config parameter"
+			" 00 (disable boot), 08 (enable boot1),"
+			"16 (enable boot2), 56 (User area)\n",
+			mmc_hostname(card->host));
+		err = -EINVAL;
+		goto err_rtn;
+	}
+
+	/* switch the partitions that used to be accessed in OS layer */
+	/* partition must be -
+	 * 0 - user area
+	 * 1 - boot partition 1
+	 * 2 - boot partition 2
+	 */
+	if ((part & EXT_CSD_BOOT_PARTITION_ACCESS_MASK) > 2) {
+		printk(KERN_ERR "%s: wrong partition id"
+			" 0 (user area), 1 (boot1), 2 (boot2)\n",
+			mmc_hostname(card->host));
+		err = -EINVAL;
+		goto err_rtn;
+	}
+
+
+	/* Send SWITCH command to change partition for access */
+	boot_config &= ~EXT_CSD_BOOT_PARTITION_ACCESS_MASK;
+	boot_config |= (part & EXT_CSD_BOOT_PARTITION_ACCESS_MASK);
+	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		EXT_CSD_PART_CONFIG, boot_config, card->ext_csd.part_time);
+	if (err) {
+		printk(KERN_ERR "%s: fail to send SWITCH command"
+				" to card to swich partition for access!\n",
+			mmc_hostname(card->host));
+		goto err_rtn;
+	}
+
+	/* waiting for the card to finish the busy state */
+	do {
+		memset(&cmd, 0, sizeof(struct mmc_command));
+
+		cmd.opcode = MMC_SEND_STATUS;
+		cmd.arg = card->rca << 16;
+		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+
+		err = mmc_wait_for_cmd(card->host, &cmd, 0);
+		if (err || busy > 100) {
+			printk(KERN_ERR "%s: failed to wait for"
+				"the busy state to end.\n",
+				mmc_hostname(card->host));
+			break;
+		}
+
+		if (!busy && !(cmd.resp[0] & R1_READY_FOR_DATA)) {
+			printk(KERN_INFO "%s: card is in busy state"
+				"pls wait for busy state to end.\n",
+				mmc_hostname(card->host));
+		}
+		busy++;
+	} while (!(cmd.resp[0] & R1_READY_FOR_DATA));
+
+
+	/* Now check whether it works */
+	err = mmc_send_ext_csd(card, ext_csd);
+	if (err) {
+		printk(KERN_ERR "%s: %d unable to re-read EXT_CSD.\n",
+			mmc_hostname(card->host), err);
+		goto err_rtn;
+	}
+
+	new_part = ext_csd[EXT_CSD_PART_CONFIG] &
+		EXT_CSD_BOOT_PARTITION_ACCESS_MASK;
+	if ((part & EXT_CSD_BOOT_PARTITION_ACCESS_MASK) != new_part) {
+		printk(KERN_ERR "%s: after SWITCH, current part id %d is not"
+				" same as requested partition %d!\n",
+			mmc_hostname(card->host), new_part, part);
+		goto err_rtn;
+	}
+	card->ext_csd.boot_config = ext_csd[EXT_CSD_PART_CONFIG];
+
+err_rtn:
+	mmc_release_host(card->host);
+	kfree(ext_csd);
+	if (err)
+		return err;
+	else
+		return count;
+}
+
+/* configure the boot bus */
+static ssize_t
+setup_boot_bus(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count)
+{
+	int err, busy = 0;
+	u32 boot_bus, new_bus;
+	u8 *ext_csd;
+	struct mmc_command cmd;
+	struct mmc_card *card = container_of(dev, struct mmc_card, dev);
+
+	BUG_ON(!card);
+
+	sscanf(buf, "%d\n", &boot_bus);
+
+	if (card->csd.mmca_vsn < CSD_SPEC_VER_4) {
+		printk(KERN_ERR "%s: invalid mmc version"
+			" mmc version is below version 4!)\n",
+			mmc_hostname(card->host));
+		return -EINVAL;
+	}
+
+	/* it's a normal SD/MMC but user request to configure boot bus */
+	if (card->ext_csd.boot_size <= 0) {
+		printk(KERN_ERR "%s: this is a normal SD/MMC card"
+			" but you request to configure boot bus !\n",
+			mmc_hostname(card->host));
+		return -EINVAL;
+	}
+
+	ext_csd = kmalloc(512, GFP_KERNEL);
+	if (!ext_csd) {
+		printk(KERN_ERR "%s: could not allocate a buffer to "
+			"receive the ext_csd.\n", mmc_hostname(card->host));
+		return -ENOMEM;
+	}
+
+	mmc_claim_host(card->host);
+	err = mmc_send_ext_csd(card, ext_csd);
+	if (err) {
+		printk(KERN_ERR "%s: unable to read EXT_CSD.\n",
+			mmc_hostname(card->host));
+		goto err_rtn;
+	}
+
+	/* Configure the boot bus width when boot partition is enabled */
+	if (((boot_bus & EXT_CSD_BOOT_BUS_WIDTH_MODE_MASK) >> 3) > 2
+			|| (boot_bus & EXT_CSD_BOOT_BUS_WIDTH_WIDTH_MASK) > 2
+			|| (boot_bus & ~EXT_CSD_BOOT_BUS_WIDTH_MASK) > 0) {
+		printk(KERN_ERR "%s: Invalid inputs!\n",
+			mmc_hostname(card->host));
+		err = -EINVAL;
+		goto err_rtn;
+	}
+
+	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+		EXT_CSD_BOOT_BUS_WIDTH, boot_bus, card->ext_csd.part_time);
+	if (err) {
+		printk(KERN_ERR "%s: fail to send SWITCH command to "
+				"card to swich partition for access!\n",
+			mmc_hostname(card->host));
+		goto err_rtn;
+	}
+
+	/* waiting for the card to finish the busy state */
+	do {
+		memset(&cmd, 0, sizeof(struct mmc_command));
+
+		cmd.opcode = MMC_SEND_STATUS;
+		cmd.arg = card->rca << 16;
+		cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
+
+		err = mmc_wait_for_cmd(card->host, &cmd, 0);
+		if (err || busy > 100) {
+			printk(KERN_ERR "%s: failed to wait for"
+				"the busy state to end.\n",
+				mmc_hostname(card->host));
+			break;
+		}
+
+		if (!busy && !(cmd.resp[0] & R1_READY_FOR_DATA)) {
+			printk(KERN_INFO "%s: card is in busy state"
+				"pls wait for busy state to end.\n",
+				mmc_hostname(card->host));
+		}
+		busy++;
+	} while (!(cmd.resp[0] & R1_READY_FOR_DATA));
+
+	/* Now check whether it works */
+	err = mmc_send_ext_csd(card, ext_csd);
+	if (err) {
+		printk(KERN_ERR "%s: %d unable to re-read EXT_CSD.\n",
+			mmc_hostname(card->host), err);
+		goto err_rtn;
+	}
+
+	new_bus = ext_csd[EXT_CSD_BOOT_BUS_WIDTH];
+	if (boot_bus  != new_bus) {
+		printk(KERN_ERR "%s: after SWITCH, current boot bus mode %d"
+				" is not same as requested bus mode %d!\n",
+			mmc_hostname(card->host), new_bus, boot_bus);
+		goto err_rtn;
+	}
+	card->ext_csd.boot_bus_width = ext_csd[EXT_CSD_BOOT_BUS_WIDTH];
+
+err_rtn:
+	mmc_release_host(card->host);
+	kfree(ext_csd);
+	if (err)
+		return err;
+	else
+		return count;
+}
+
+#ifdef TEST_MMC_CTOE
+extern void emmc_force_power_off();
+
+static ssize_t force_pwroff_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+	long i = simple_strtol(buf, NULL, 10);
+	if (i) {
+		printk(KERN_ERR "force power off mmc\n");
+		emmc_force_power_off();
+	}
+
+	return count;
+}
+static DEVICE_ATTR(force_pwroff, S_IWUGO, NULL, force_pwroff_store);
+#endif
+
 MMC_DEV_ATTR(cid, "%08x%08x%08x%08x\n", card->raw_cid[0], card->raw_cid[1],
 	card->raw_cid[2], card->raw_cid[3]);
 MMC_DEV_ATTR(csd, "%08x%08x%08x%08x\n", card->raw_csd[0], card->raw_csd[1],
@@ -497,6 +814,116 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
+
+static ssize_t mmc_boot_info_show(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	char *boot_partition[8] = {
+		"Device not boot enabled",
+		"Boot partition 1 enabled",
+		"Boot partition 2 enabled",
+		"Reserved",
+		"Reserved",
+		"Reserved",
+		"Reserved",
+		"User area enabled for boot"};
+
+	char *boot_partition_access[8] = {
+		"No access to boot partition",
+		"R/W boot partition 1",
+		"R/W boot partition 2",
+		"R/W Replay Protected Memory Block (RPMB)",
+		"Access to General Purpose partition 1",
+		"Access to General Purpose partition 2",
+		"Access to General Purpose partition 3",
+		"Access to General Purpose partition 4"};
+
+	char *bus_width[4] = {
+		"x1 (sdr) or x4 (ddr) bus width in boot operation mode",
+		"x4 (sdr/ddr) bus width in boot operation mode",
+		"x8 (sdr/ddr) bus width in boot operation mode",
+		"Reserved"};
+
+	char *boot_mode[4] = {
+	"Use single data rate + backward compatible timings in boot operation",
+	"Use single data rate + high speed timings in boot operation mode",
+	"Use dual data rate in boot operation",
+	"Reserved"};
+
+	int partition;
+	int access;
+	int width;
+	int mode;
+	u8 *ext_csd = NULL;
+	struct mmc_card *card = container_of(dev, struct mmc_card, dev);
+
+	/* read it again because user may change it */
+	mmc_claim_host(card->host);
+	mmc_get_ext_csd(card, &ext_csd);
+	mmc_release_host(card->host);
+	mmc_read_ext_csd(card, ext_csd);
+
+	partition = (card->ext_csd.boot_config >> 3) & 0x7;
+	access = card->ext_csd.boot_config & 0x7;
+	width =  card->ext_csd.boot_bus_width & 0x3;
+	mode = (card->ext_csd.boot_bus_width >> 3) & 0x3;
+
+	return sprintf(buf,
+		"boot_info:0x%02x;\n"
+		"  ALT_BOOT_MODE:%x - %s\n"
+		"  DDR_BOOT_MODE:%x - %s\n"
+		"  HS_BOOTMODE:%x - %s\n"
+		"boot_size:%04dKB\n"
+		"boot_partition:0x%02x;\n"
+		"  BOOT_ACK:%x - %s\n"
+		"  BOOT_PARTITION-ENABLE: %x - %s\n"
+		"  PARTITION_ACCESS:%x - %s\n"
+		"boot_bus:0x%02x\n"
+		"  BOOT_MODE:%x - %s\n"
+		"  RESET_BOOT_BUS_WIDTH:%x - %s\n"
+		"  BOOT_BUS_WIDTH:%x - %s\n",
+
+		card->ext_csd.boot_info,
+		!!(card->ext_csd.boot_info & 0x1),
+		(card->ext_csd.boot_info & 0x1) ?
+			"Supports alternate boot method" :
+			"Does not support alternate boot method",
+		!!(card->ext_csd.boot_info & 0x2),
+		(card->ext_csd.boot_info & 0x2) ?
+			"Supports alternate dual data rate during boot" :
+			"Does not support dual data rate during boot",
+		!!(card->ext_csd.boot_info & 0x4),
+		(card->ext_csd.boot_info & 0x4) ?
+			"Supports high speed timing during boot" :
+			"Does not support high speed timing during boot",
+
+		card->ext_csd.boot_size * 128,
+
+		card->ext_csd.boot_config,
+		!!(card->ext_csd.boot_config & 0x40),
+		(card->ext_csd.boot_config & 0x40) ?
+			"Boot acknowledge sent during boot operation" :
+			"No boot acknowledge sent",
+		partition,
+		boot_partition[partition],
+		access,
+		boot_partition_access[access],
+
+		card->ext_csd.boot_bus_width,
+		mode,
+		boot_mode[mode],
+		!!(card->ext_csd.boot_bus_width & 0x4),
+		(card->ext_csd.boot_bus_width & 0x4) ?
+		  "Retain boot bus width and boot mode after boot operation" :
+		  "Reset bus width to x1, single data rate and backward"
+		  "compatible timings after boot operation",
+		width,
+		bus_width[width]);
+}
+
+DEVICE_ATTR(boot_config, S_IWUGO, NULL, setup_boot_partitions);
+DEVICE_ATTR(boot_bus_config, S_IWUGO, NULL, setup_boot_bus);
+DEVICE_ATTR(boot_info, S_IRUGO, mmc_boot_info_show, NULL);
 MMC_DEV_ATTR(enhanced_area_offset, "%llu\n",
 		card->ext_csd.enhanced_area_offset);
 MMC_DEV_ATTR(enhanced_area_size, "%u\n", card->ext_csd.enhanced_area_size);
@@ -513,6 +940,12 @@ static struct attribute *mmc_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_serial.attr,
+#ifdef TEST_MMC_CTOE
+	&dev_attr_force_pwroff.attr,
+#endif	
+	&dev_attr_boot_info.attr,
+	&dev_attr_boot_config.attr,
+	&dev_attr_boot_bus_config.attr,
 	&dev_attr_enhanced_area_offset.attr,
 	&dev_attr_enhanced_area_size.attr,
 	NULL,
@@ -531,6 +964,31 @@ static struct device_type mmc_type = {
 	.groups = mmc_attr_groups,
 };
 
+#ifdef CONFIG_LAB126
+
+/* Note the ifndef below */
+#ifndef CONFIG_EMMC_EXT_CSD_RESET_N_FUNCTION
+
+/*
+ * 
+ * Card reset has been done before mmc_init_card.
+ * So we shall go through CMD0+CMD1 loop only once.
+ */
+#define MMC_CARD_INIT_RETRIES   (1)
+
+#else
+
+/*
+ * For a hardware reset, no retries are necessary. Once is enough.
+ * Out of an abundance of caution, we are allowing 20 retries.
+ */
+
+#define MMC_CARD_INIT_RETRIES (20)
+
+#endif /* CONFIG_EMMC_EXT_CSD_RESET_N_FUNCTION */
+
+#endif /* CONFIG_LAB126 */
+
 /*
  * Handle the detection and initialisation of a card.
  *
@@ -547,9 +1005,49 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	u32 rocr;
 	u8 *ext_csd = NULL;
 
+#ifdef CONFIG_LAB126        
+	int retries;
+#ifdef CONFIG_EMMC_EXT_CSD_RESET_N_FUNCTION        
+	u8  rstn;
+#endif
+		
+#endif /* CONFIG_LAB126 */
+
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
 
+#ifdef CONFIG_LAB126
+	for (retries = MMC_CARD_INIT_RETRIES; retries ; retries--) {
+		pr_debug("%s: Before CMD0\n", __FUNCTION__);
+		/*
+		 * Since we're changing the OCR value, we seem to
+		 * need to tell some cards to go back to the idle
+		 * state.  We wait 1ms to give cards time to
+		 * respond.
+		 */
+		mmc_go_idle(host);
+
+		pr_debug("%s: Before CMD1\n", __FUNCTION__);
+		/* The extra bit indicates that we support high capacity */
+		err = mmc_send_op_cond(host, ocr | (1 << 30), &rocr);
+		if (!err)
+			break;
+
+		/*
+		 * eMMC did not respond to CMD1.
+		 * Reset eMMC and uSDHC.
+		 */
+		if (host->ops->reset_card) {
+			int retval;
+			pr_debug("%s: Before reset_card\n", __FUNCTION__);
+			retval = host->ops->reset_card(host);
+			if (retval) {
+				printk(KERN_ERR "%s: card reset failed %d\n",
+					__FUNCTION__, retval);
+			}
+		}
+	}
+#else /* CONFIG_LAB126 */
 	/*
 	 * Since we're changing the OCR value, we seem to
 	 * need to tell some cards to go back to the idle
@@ -560,6 +1058,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 
 	/* The extra bit indicates that we support high capacity */
 	err = mmc_send_op_cond(host, ocr | (1 << 30), &rocr);
+#endif /* CONFIG_LAB126 */
 	if (err)
 		goto err;
 
@@ -590,6 +1089,8 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 
 		card = oldcard;
 	} else {
+		u32 manufacturer_id;
+
 		/*
 		 * Allocate card structure.
 		 */
@@ -602,6 +1103,31 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		card->type = MMC_TYPE_MMC;
 		card->rca = 1;
 		memcpy(card->raw_cid, cid, sizeof(card->raw_cid));
+
+		manufacturer_id = UNSTUFF_BITS(card->raw_cid, 104, 24);
+		manufacturer_id = (manufacturer_id >> 16);
+
+		switch (manufacturer_id) {
+		case TOSHIBA_MANF_ID:
+			printk(KERN_INFO "emmc: I def:mmcpartinfo:vendor=toshiba, host=%s:\n", mmc_hostname(host));
+			break;
+		case SAMSUNG_MANF_ID:
+			printk(KERN_INFO "emmc: I def:mmcpartinfo:vendor=samsung, host=%s:\n", mmc_hostname(host));
+			break;
+		case HYNIX_MANF_ID:
+			printk(KERN_INFO "emmc: I def:mmcpartinfo:vendor=hynix, host=%s:\n", mmc_hostname(host));
+			break;
+		case MICRON_MANF_ID:
+			printk(KERN_INFO "emmc: I def:mmcpartinfo:vendor=micron, host=%s:\n", mmc_hostname(host));
+			break;
+		case SANDISK_MANF_ID:
+			printk(KERN_INFO "emmc: I def:mmcpartinfo:vendor=sandisk, host=%s:\n", mmc_hostname(host));
+			break;
+		default:
+			printk(KERN_INFO "emmc: I def:mmcpartinfo:vendor=unknown, host=%s, manufacturer_id=0x%x:\n",
+					mmc_hostname(host), manufacturer_id);
+			break;
+		}
 	}
 
 	/*
@@ -651,6 +1177,26 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 		err = mmc_read_ext_csd(card, ext_csd);
 		if (err)
 			goto free_card;
+
+#ifdef CONFIG_EMMC_EXT_CSD_RESET_N_FUNCTION
+		/*
+		 * If not done already, permanently enable RST_n.
+		 */
+		rstn = card->ext_csd.raw_rst_n_function & EXT_CSD_RST_N_ENABLE_MASK;
+		if (rstn == EXT_CSD_RST_N_TEMPORARY_DISABLE) {
+				printk(KERN_INFO "%s: RSTN=%d\n", __FUNCTION__, rstn);
+				rstn = EXT_CSD_RST_N_PERMANENT_ENABLE;
+				err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+								 EXT_CSD_RST_N_FUNCTION, rstn, 0);
+				printk(KERN_INFO "%s: Switch RSTN=%d, err=%d\n",
+					   __FUNCTION__, rstn, err);
+				if (err)
+						goto free_card;
+		} else {
+				printk(KERN_INFO "%s: RSTN already set to %d\n",
+					   __FUNCTION__, rstn);
+		}
+#endif  /* CONFIG_EMMC_EXT_CSD_RESET_N_FUNCTION */
 
 		/* If doing byte addressing, check if required to do sector
 		 * addressing.  Handle the case of <2GB cards needing sector
@@ -719,7 +1265,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 
 		if (err) {
 			printk(KERN_WARNING "%s: switch to highspeed failed\n",
-			       mmc_hostname(card->host));
+				   mmc_hostname(card->host));
 			err = 0;
 		} else {
 			mmc_card_set_highspeed(card);
@@ -747,12 +1293,12 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	if (mmc_card_highspeed(card)) {
 		if ((card->ext_csd.card_type & EXT_CSD_CARD_TYPE_DDR_1_8V)
 			&& ((host->caps & (MMC_CAP_1_8V_DDR |
-			     MMC_CAP_UHS_DDR50))
+				 MMC_CAP_UHS_DDR50))
 				== (MMC_CAP_1_8V_DDR | MMC_CAP_UHS_DDR50)))
 				ddr = MMC_1_8V_DDR_MODE;
 		else if ((card->ext_csd.card_type & EXT_CSD_CARD_TYPE_DDR_1_2V)
 			&& ((host->caps & (MMC_CAP_1_2V_DDR |
-			     MMC_CAP_UHS_DDR50))
+				 MMC_CAP_UHS_DDR50))
 				== (MMC_CAP_1_2V_DDR | MMC_CAP_UHS_DDR50)))
 				ddr = MMC_1_2V_DDR_MODE;
 	}
@@ -761,7 +1307,7 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	 * Activate wide bus and DDR (if supported).
 	 */
 	if ((card->csd.mmca_vsn >= CSD_SPEC_VER_4) &&
-	    (host->caps & (MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA))) {
+		(host->caps & (MMC_CAP_4_BIT_DATA | MMC_CAP_8_BIT_DATA))) {
 		static unsigned ext_csd_bits[][2] = {
 			{ EXT_CSD_BUS_WIDTH_8, EXT_CSD_DDR_BUS_WIDTH_8 },
 			{ EXT_CSD_BUS_WIDTH_4, EXT_CSD_DDR_BUS_WIDTH_4 },
@@ -857,6 +1403,100 @@ err:
 	return err;
 }
 
+#ifdef CONFIG_LAB126
+// Note: This func does not do fully re-initializing.
+// It just does minimum required steps to recovery MMC after resetting MMC due to CTOE
+// to quickly bring MMC back to work normally
+
+static int mmc_reinit(struct mmc_host *host)
+{
+	const int MAX_SEND_OP_TRIES = 5;
+	int i;
+	int err = 0;
+	u32 ocr;
+	u32 rocr;
+	u32 cid[4];
+
+	BUG_ON(!host);
+	BUG_ON(!host->card);
+
+	struct mmc_card *card = host->card;
+
+	printk(KERN_ERR "%s: Reinit card\n", __FUNCTION__);
+	
+	// Set Clock to 0.4 MHz
+	mmc_set_clock(host, 400000);
+
+	// CMD0
+	err = mmc_go_idle(host);
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) go to idle\n", __FUNCTION__, err);
+		return err;
+	}
+
+	// CMD1
+	for (i=0; i<MAX_SEND_OP_TRIES; i++) {
+		err = mmc_send_op_cond(host, host->ocr | (1 << 30), &rocr);
+		if (!err) // Ready State?
+			break;
+	}
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) send op cond\n", __FUNCTION__, err);
+		return err;
+	}
+
+	// CMD2
+	err = mmc_all_send_cid(host, cid);
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) send cid\n", __FUNCTION__, err);
+		return err;
+	}
+
+	// CMD3
+	err = mmc_set_relative_addr(card);
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) set addr\n", __FUNCTION__, err);
+		return err;
+	}
+	mmc_set_bus_mode(host, MMC_BUSMODE_PUSHPULL);
+
+	// CMD7
+	err = mmc_select_card(card);
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) select card\n", __FUNCTION__, err);
+		return err;
+	}
+
+	// CMD6 - Set High Speed
+	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL, EXT_CSD_HS_TIMING, 1, 0);
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) switch to high speed\n", __FUNCTION__, err);
+		return err;
+	}
+
+	// Set Clock
+	unsigned int max_dtr = (unsigned int)-1;
+	if (mmc_card_highspeed(card)) {
+		if (max_dtr > card->ext_csd.hs_max_dtr)
+			max_dtr = card->ext_csd.hs_max_dtr;
+	} else if (max_dtr > card->csd.max_dtr) {
+		max_dtr = card->csd.max_dtr;
+	}
+	mmc_set_clock(host, max_dtr);
+
+	// CMD6 - Set 8 bits DDR
+	err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL, EXT_CSD_BUS_WIDTH, EXT_CSD_DDR_BUS_WIDTH_8, 0);
+	if (err) {
+		printk(KERN_ERR "%s: Error (%d) switch to DDR x8 width\n", __FUNCTION__, err);
+		return err;
+	}
+
+	printk(KERN_ERR "%s: Reinit card done\n", __FUNCTION__);
+
+	return 0;
+}
+#endif
+
 /*
  * Host is being removed. Free up the current card.
  */
@@ -929,6 +1569,22 @@ static int mmc_resume(struct mmc_host *host)
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
+	
+#ifdef CONFIG_LAB126
+	if(HW_SUPPORT_EMMC_POWER_GATE) {
+		if (host->ops->reset_card) {
+			int retval;
+			
+			pr_debug("%s: Before reset_card\n", __FUNCTION__);
+			retval = host->ops->reset_card(host);
+			if (retval) {
+				printk(KERN_ERR "%s: card reset failed %d\n",
+					__FUNCTION__, retval);
+			}
+		}
+	}
+#endif /* CONFIG_LAB126 */
+
 	err = mmc_init_card(host, host->ocr, host->card);
 	mmc_release_host(host);
 
@@ -985,6 +1641,9 @@ static const struct mmc_bus_ops mmc_ops = {
 	.suspend = NULL,
 	.resume = NULL,
 	.power_restore = mmc_power_restore,
+#ifdef CONFIG_LAB126
+	.reinit = mmc_reinit,
+#endif	
 };
 
 static const struct mmc_bus_ops mmc_ops_unsafe = {
@@ -995,6 +1654,9 @@ static const struct mmc_bus_ops mmc_ops_unsafe = {
 	.suspend = mmc_suspend,
 	.resume = mmc_resume,
 	.power_restore = mmc_power_restore,
+#ifdef CONFIG_LAB126
+	.reinit = mmc_reinit,
+#endif	
 };
 
 static void mmc_attach_bus_ops(struct mmc_host *host)
@@ -1042,8 +1704,8 @@ int mmc_attach_mmc(struct mmc_host *host)
 	 */
 	if (ocr & 0x7F) {
 		printk(KERN_WARNING "%s: card claims to support voltages "
-		       "below the defined range. These will be ignored.\n",
-		       mmc_hostname(host));
+			   "below the defined range. These will be ignored.\n",
+			   mmc_hostname(host));
 		ocr &= ~0x7F;
 	}
 

@@ -1251,6 +1251,27 @@ out:
 }
 EXPORT_SYMBOL(cpufreq_get);
 
+#ifdef CONFIG_CPU_FREQ_OVERRIDE_LAB126 
+/* Lab126: Call the driver override */
+unsigned int cpufreq_override(unsigned int is_override)
+{
+	int cpu;
+	struct cpufreq_policy *policy;
+
+	for_each_possible_cpu(cpu)
+	{
+		policy = cpufreq_cpu_get(cpu);
+		if (!policy)
+			continue;
+		if (policy->governor->override)
+			policy->governor->override(policy, is_override);
+		cpufreq_cpu_put(policy);
+	}
+	return 0;
+}
+EXPORT_SYMBOL(cpufreq_override);
+#endif
+
 static struct sysdev_driver cpufreq_sysdev_driver = {
 	.add		= cpufreq_add_dev,
 	.remove		= cpufreq_remove_dev,

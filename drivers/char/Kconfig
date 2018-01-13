@@ -109,6 +109,22 @@ config BFIN_OTP_WRITE_ENABLE
 
 	  If unsure, say N.
 
+config FSL_OTP
+	tristate "Freescale On-Chip OTP Memory Support"
+	depends on (ARCH_MX23 || ARCH_MX28 || ARCH_MX50 || ARCH_MX6)
+	default n
+	help
+	  If you say Y here, you will get support for a character device
+	  interface into the One Time Programmable memory pages that are
+	  stored on the iMX23/28/50 processor.  This will not get you access
+	  to the secure memory pages however.  You will need to write your
+	  own secure code and reader for that.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called fsl_otp.
+
+	  If unsure, it is safe to say Y.
+
 config PRINTER
 	tristate "Parallel printer support"
 	depends on PARPORT
@@ -209,6 +225,14 @@ config DS1620
 	  It is also possible to say M here to build it as a module (ds1620)
 	  It is recommended to be used on a NetWinder, but it is not a
 	  necessity.
+
+config WARIO_HALL
+        tristate "MX60 Wario Hall Sensor"
+        depends on MACH_MX6SL_WARIO
+        help
+          Enable support for Wario hall sensor. To compile this driver as a
+	  module, choose M here; the module will be called wario_hall
+
 
 config NWBUTTON
 	tristate "NetWinder Button"
@@ -615,6 +639,28 @@ config MSM_SMD_PKT
 	help
 	  Enables userspace clients to read and write to some packet SMD
 	  ports via device interface for MSM chipset.
+
+config MXC_IIM
+	tristate "MXC IIM device driver"
+	depends on (ARCH_MX51 || ARCH_MX53)
+	help
+	  Support for access to MXC IIM device, most people should say N here.
+
+config MXS_VIIM
+	tristate "MXS Virtual IIM device driver"
+	depends on (ARCH_MX50 || ARCH_MX6)
+	help
+	  Support for access to MXS Virtual IIM device, most people should say N here.
+
+config MAX77696_CHARDEV
+    bool "Device file for event mgmt for Maxim Semiconductor MAX77696 PMIC"
+    default n
+    depends on MFD_MAX77696
+    help
+      Say Y here to use "Max77696 pmic" device files, found in the /dev directory
+      on the system.  They make it possible to have user-space programs
+      use or control PMIC. Mainly its useful for notifying PMIC events
+      to user-space programs.
 
 endmenu
 

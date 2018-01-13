@@ -46,10 +46,96 @@ void update_pm_runtime_accounting(struct device *dev)
 		dev->power.active_jiffies += delta;
 }
 
+#define WAITERS_MAX 256
+struct waiter{
+	struct device * dev;
+	struct task_struct * task;
+	u32 fp;
+};
+struct waiter waters_arr[WAITERS_MAX];
+
+static void waiter_add(struct device *dev){
+	int i, fp;
+	
+	for(i=0; i< WAITERS_MAX; i++){
+		if (waters_arr[i].dev==NULL){
+			waters_arr[i].dev = dev;
+			waters_arr[i].task = current;
+			asm("mov %0, fp" : "=r" (fp) : : "cc");
+			waters_arr[i].fp = fp;
+			break;
+		}
+	}
+}
+static void waiter_rm(struct device *dev){
+	int i;
+
+	for(i=0; i< WAITERS_MAX; i++){
+		if (waters_arr[i].dev==dev){
+			waters_arr[i].dev = NULL;
+			break;
+		}
+	}
+}
+
+#include <linux/debug_locks.h>
+
+#include <asm/atomic.h>
+#include <asm/cacheflush.h>
+#include <asm/system.h>
+#include <asm/unistd.h>
+#include <asm/traps.h>
+#include <asm/unwind.h>
+#include <asm/tls.h>
+#include <linux/hardirq.h>
+
+extern void sched_show_task(struct task_struct *p);
+void waiters_print(void){
+	int i, fp, ok;
+	struct device *dev;
+	struct task_struct* task;
+
+	printk(KERN_ERR"%s:%d\n", __FUNCTION__,__LINE__);
+	for(i=0; i< WAITERS_MAX; i++){
+		if (waters_arr[i].dev!=NULL){
+			dev = waters_arr[i].dev;
+			task = waters_arr[i].task;
+			fp = waters_arr[i].fp;
+			ok = 1;
+			
+			printk(KERN_ERR "waiter dev:0x%x name:%s dev->power.runtime_status:%d parent:0x%x parent_name:%s \n", (u32)dev, dev_name(dev), dev->power.runtime_status, (u32)(dev->parent), dev->parent ? dev_name(dev->parent) : "no parent");
+			sched_show_task(task);
+						
+			if (!fp) {
+				printk(KERN_ERR"no frame pointer");
+				ok = 0;
+			} else if (fp < PAGE_OFFSET ||
+					   (fp > (unsigned long)high_memory && high_memory != NULL)) 
+			{
+				printk(KERN_ERR"invalid frame pointer 0x%08x", fp);
+				ok = 0;
+			} else if (fp < (unsigned long)end_of_stack(task))
+				printk(KERN_ERR"frame pointer underflow");
+			printk("\n");
+			
+			if (ok)
+				c_backtrace(fp, 0x10);
+			
+			debug_show_held_locks(task);						
+		}
+	}
+}
+
 static void __update_runtime_status(struct device *dev, enum rpm_status status)
 {
+	
 	update_pm_runtime_accounting(dev);
 	dev->power.runtime_status = status;
+	
+	if(status == RPM_SUSPENDING || status == RPM_RESUMING)
+		waiter_add(dev);
+	else
+		waiter_rm(dev);
 }
 
 /**
@@ -350,11 +436,13 @@ static int rpm_suspend(struct device *dev, int rpmflags)
 			if (dev->power.runtime_status != RPM_SUSPENDING)
 				break;
 
+			waiter_add(dev);
 			spin_unlock_irq(&dev->power.lock);
 
 			schedule();
 
 			spin_lock_irq(&dev->power.lock);
+			waiter_rm(dev);
 		}
 		finish_wait(&dev->power.wait_queue, &wait);
 		goto repeat;
@@ -511,11 +599,13 @@ static int rpm_resume(struct device *dev, int rpmflags)
 			    && dev->power.runtime_status != RPM_SUSPENDING)
 				break;
 
+			waiter_add(dev);
 			spin_unlock_irq(&dev->power.lock);
 
 			schedule();
 
 			spin_lock_irq(&dev->power.lock);
+			waiter_rm(dev);
 		}
 		finish_wait(&dev->power.wait_queue, &wait);
 		goto repeat;
@@ -930,11 +1020,14 @@ static void __pm_runtime_barrier(struct device *dev)
 			    && dev->power.runtime_status != RPM_RESUMING
 			    && !dev->power.idle_notification)
 				break;
+
+			waiter_add(dev);
 			spin_unlock_irq(&dev->power.lock);
 
 			schedule();
 
 			spin_lock_irq(&dev->power.lock);
+			waiter_rm(dev);
 		}
 		finish_wait(&dev->power.wait_queue, &wait);
 	}

@@ -423,6 +423,8 @@ static int snd_usb_audio_create(struct usb_device *dev, int idx,
 	return 0;
 }
 
+extern int audio_enumerated;
+
 /*
  * probe the active usb device
  *
@@ -526,6 +528,7 @@ static void *snd_usb_audio_probe(struct usb_device *dev,
 	chip->num_interfaces++;
 	chip->probing = 0;
 	mutex_unlock(&register_mutex);
+	audio_enumerated = 1;
 	return chip;
 
  __error:
@@ -556,6 +559,7 @@ static void snd_usb_audio_disconnect(struct usb_device *dev, void *ptr)
 	card = chip->card;
 	mutex_lock(&register_mutex);
 	mutex_lock(&chip->shutdown_mutex);
+	audio_enumerated = 0;
 	chip->shutdown = 1;
 	chip->num_interfaces--;
 	if (chip->num_interfaces <= 0) {
@@ -580,6 +584,7 @@ static void snd_usb_audio_disconnect(struct usb_device *dev, void *ptr)
 		mutex_unlock(&chip->shutdown_mutex);
 		mutex_unlock(&register_mutex);
 	}
+
 }
 
 /*
@@ -706,6 +711,7 @@ static struct usb_driver usb_audio_driver = {
 	.disconnect =	usb_audio_disconnect,
 	.suspend =	usb_audio_suspend,
 	.resume =	usb_audio_resume,
+	.reset_resume =	usb_audio_resume,
 	.id_table =	usb_audio_ids,
 	.supports_autosuspend = 1,
 };
